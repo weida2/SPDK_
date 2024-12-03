@@ -707,7 +707,8 @@ struct spdk_bdev_io {
 			/* The data buffer */
 			void *buf;
 		} zone_mgmt;
-	} u;
+	} u;  // 这里union里bdev比较重要
+		  // 目前bdev里只看到iovecs, num_blocks, offset_blocks, stored_user_cb
 
 	/** It may be used by modules to put the bdev_io into its own list. */
 	TAILQ_ENTRY(spdk_bdev_io) module_link;
@@ -810,7 +811,8 @@ struct spdk_bdev_io {
 
 		/** Data transfer completion callback */
 		void (*data_transfer_cpl)(void *ctx, int rc);
-	} internal;
+	} internal;  // internal没太看懂
+				 // 只看到cb(bdev_io完成时的回调),caller_ctx(回调上下文参数)
 
 	/**
 	 * Per I/O context for use by the bdev module.

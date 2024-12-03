@@ -265,10 +265,13 @@ hello_world(void)
 		 *
 		 * When the write I/O completes, write_complete() will submit a new I/O
 		 *  to read LBA 0 into a separate buffer, specifying read_complete() as its
-		 *  completion routine.  When the read I/O completes, read_complete() will
+		 *  completion routine.  
+		 * 	When the read I/O completes, read_complete() will
 		 *  print the buffer contents and set sequence.is_completed = 1.  That will
-		 *  break this loop and then exit the program.
+		 *  break this loop and then exit the program. // 结束轮询过程，退出程序
 		 */
+
+		// 轮询过程，需要用户程序自己主动来触发这个轮询过程
 		while (!sequence.is_completed) {
 			spdk_nvme_qpair_process_completions(ns_entry->qpair, 0);
 		}

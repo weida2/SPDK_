@@ -1260,6 +1260,7 @@ nvme_allocate_request(struct spdk_nvme_qpair *qpair,
 {
 	struct nvme_request *req;
 
+	// 直接从qpair free_req队列队头取出
 	req = STAILQ_FIRST(&qpair->free_req);
 	if (req == NULL) {
 		return req;

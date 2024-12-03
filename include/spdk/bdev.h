@@ -147,7 +147,7 @@ enum spdk_bdev_qos_rate_limit_type {
  */
 typedef void (*spdk_bdev_io_completion_cb)(struct spdk_bdev_io *bdev_io,
 		bool success,
-		void *cb_arg);
+		void *cb_arg);  // 回调函数的参数格式为 1.bdev_io, 2.状态, 3.参数
 
 struct spdk_bdev_io_stat {
 	uint64_t bytes_read;

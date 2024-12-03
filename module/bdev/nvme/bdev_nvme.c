@@ -2072,6 +2072,7 @@ exit:
 static void
 bdev_nvme_submit_request(struct spdk_io_channel *ch, struct spdk_bdev_io *bdev_io)
 {
+	// 将spdk_io_ch扩展成具体的nvme_io_channel，其对应一个queue parir
 	struct nvme_bdev_channel *nbdev_ch = spdk_io_channel_get_ctx(ch);
 	struct spdk_bdev *bdev = bdev_io->bdev;
 	struct nvme_bdev_io *nbdev_io = (struct nvme_bdev_io *)bdev_io->driver_ctx;
@@ -2090,7 +2091,8 @@ bdev_nvme_submit_request(struct spdk_io_channel *ch, struct spdk_bdev_io *bdev_i
 		 * Simply fall through even if it is not found.
 		 */
 	}
-
+	// 针对读写请求，会将bdev_io扩展成nvme_bdev_io请求后，将请求内容填入io channel
+	// 对应的queue pair中，并通知硬件处理
 	switch (bdev_io->type) {
 	case SPDK_BDEV_IO_TYPE_READ:
 		if (bdev_io->u.bdev.iovs && bdev_io->u.bdev.iovs[0].iov_base) {

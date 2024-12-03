@@ -394,6 +394,7 @@ _nvme_ns_cmd_rw(struct spdk_nvme_ns *ns, struct spdk_nvme_qpair *qpair,
 	assert(rc != NULL);
 	assert(*rc == 0);
 
+	// qpair中预分配了req结构体
 	req = nvme_allocate_request(qpair, payload, lba_count * sector_size, lba_count * ns->md_size,
 				    cb_fn, cb_arg);
 	if (req == NULL) {
@@ -445,6 +446,7 @@ _nvme_ns_cmd_rw(struct spdk_nvme_ns *ns, struct spdk_nvme_qpair *qpair,
 		}
 	}
 
+	// 这里封装req->cmd命令
 	_nvme_ns_cmd_setup_request(ns, req, opc, lba, lba_count, io_flags, apptag_mask, apptag);
 	return req;
 }
@@ -772,9 +774,11 @@ spdk_nvme_ns_cmd_write(struct spdk_nvme_ns *ns, struct spdk_nvme_qpair *qpair,
 
 	payload = NVME_PAYLOAD_CONTIG(buffer, NULL);
 
+	// 分配req结构并且封装
 	req = _nvme_ns_cmd_rw(ns, qpair, &payload, 0, 0, lba, lba_count, cb_fn, cb_arg, SPDK_NVME_OPC_WRITE,
 			      io_flags, 0, 0, false, &rc);
 	if (req != NULL) {
+		// 将req提交到队列对中的SQ队列
 		return nvme_qpair_submit_request(qpair, req);
 	} else {
 		return nvme_ns_map_failure_rc(lba_count,

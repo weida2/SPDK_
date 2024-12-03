@@ -244,24 +244,24 @@ struct spdk_bdev_channel {
 	/* Per io_device per thread data */
 	struct spdk_bdev_shared_resource *shared_resource;
 
-	struct spdk_bdev_io_stat stat;
+	struct spdk_bdev_io_stat stat;  // 统计io状态
 
 	/*
 	 * Count of I/O submitted to the underlying dev module through this channel
 	 * and waiting for completion.
 	 */
-	uint64_t		io_outstanding;
+	uint64_t		io_outstanding;  // 统计从这个channel提交到底层设备的io个数
 
 	/*
 	 * List of all submitted I/Os including I/O that are generated via splitting.
 	 */
-	bdev_io_tailq_t		io_submitted;
+	bdev_io_tailq_t		io_submitted;  // 提交io队列
 
 	/*
 	 * List of spdk_bdev_io that are currently queued because they write to a locked
 	 * LBA range.
 	 */
-	bdev_io_tailq_t		io_locked;
+	bdev_io_tailq_t		io_locked;  // 当前正在排队的io队列，因为它们要写同样的LBA空间
 
 	uint32_t		flags;
 
@@ -276,7 +276,7 @@ struct spdk_bdev_channel {
 
 	bdev_io_tailq_t		queued_resets;
 
-	lba_range_tailq_t	locked_ranges;
+	lba_range_tailq_t	locked_ranges;  // 锁定的LBA范围
 };
 
 struct media_event_entry {
@@ -2161,7 +2161,7 @@ bdev_io_do_submit(struct spdk_bdev_channel *bdev_ch, struct spdk_bdev_io *bdev_i
 		    bdev_abort_buf_io(&mgmt_channel->need_buf_small, bio_to_abort) ||
 		    bdev_abort_buf_io(&mgmt_channel->need_buf_large, bio_to_abort)) {
 			_bdev_io_complete_in_submit(bdev_ch, bdev_io,
-						    SPDK_BDEV_IO_STATUS_SUCCESS);
+						    SPDK_BDEV_IO_STATUS_SUCCESS);  // 执行成功 SUCCESS
 			return;
 		}
 	}
@@ -2178,6 +2178,8 @@ bdev_io_do_submit(struct spdk_bdev_channel *bdev_ch, struct spdk_bdev_io *bdev_i
 		bdev_ch->io_outstanding++;
 		shared_resource->io_outstanding++;
 		bdev_io->internal.in_submit_request = true;
+		// 不同的驱动在生成 bdev 对象时会注册不同的fn_table，这里将调用驱动注册的sumbit_request函数
+		// 例如调用bdev_nvme_readv
 		bdev->fn_table->submit_request(ch, bdev_io);
 		bdev_io->internal.in_submit_request = false;
 	} else {
@@ -2884,7 +2886,7 @@ bdev_io_submit(struct spdk_bdev_io *bdev_io)
 	}
 
 	if (ch->flags & BDEV_CH_QOS_ENABLED) {
-		if ((thread == bdev->internal.qos->thread) || !bdev->internal.qos->thread) {
+		if ((thread == bdev->internal.qos->thread) || !bdev->internal.qos->thread) {  // 开启了bdev的qos特性时走该流程
 			_bdev_io_submit(bdev_io);
 		} else {
 			bdev_io->internal.io_submit_ch = ch;
@@ -4322,6 +4324,8 @@ bdev_read_blocks_with_md(struct spdk_bdev_desc *desc, struct spdk_io_channel *ch
 		return -ENOMEM;
 	}
 
+	// 这里给bdev_io对象初始化填充内容
+	// 先填充bdev_io union_bdev里的内容
 	bdev_io->internal.ch = channel;
 	bdev_io->internal.desc = desc;
 	bdev_io->type = SPDK_BDEV_IO_TYPE_READ;
@@ -4333,6 +4337,7 @@ bdev_read_blocks_with_md(struct spdk_bdev_desc *desc, struct spdk_io_channel *ch
 	bdev_io->u.bdev.num_blocks = num_blocks;
 	bdev_io->u.bdev.offset_blocks = offset_blocks;
 	bdev_io->u.bdev.ext_opts = NULL;
+	// 再填充bdev_io internal的内容,初始化大部分为NULL
 	bdev_io_init(bdev_io, bdev, cb_arg, cb);
 
 	bdev_io_submit(bdev_io);
@@ -4527,7 +4532,7 @@ bdev_write_blocks_with_md(struct spdk_bdev_desc *desc, struct spdk_io_channel *c
 	if (!bdev_io) {
 		return -ENOMEM;
 	}
-
+	// 1.填充bio->u
 	bdev_io->internal.ch = channel;
 	bdev_io->internal.desc = desc;
 	bdev_io->type = SPDK_BDEV_IO_TYPE_WRITE;
@@ -4539,6 +4544,7 @@ bdev_write_blocks_with_md(struct spdk_bdev_desc *desc, struct spdk_io_channel *c
 	bdev_io->u.bdev.num_blocks = num_blocks;
 	bdev_io->u.bdev.offset_blocks = offset_blocks;
 	bdev_io->u.bdev.ext_opts = NULL;
+	// 2.填充bio->internal
 	bdev_io_init(bdev_io, bdev, cb_arg, cb);
 
 	bdev_io_submit(bdev_io);
@@ -4552,6 +4558,7 @@ spdk_bdev_write(struct spdk_bdev_desc *desc, struct spdk_io_channel *ch,
 {
 	uint64_t offset_blocks, num_blocks;
 
+	// 将字节 Bytes 级别的I/O偏移和IO长度转化为 块级别(Block)的块偏移和块数量
 	if (bdev_bytes_to_blocks(spdk_bdev_desc_get_bdev(desc), offset, &offset_blocks,
 				 nbytes, &num_blocks) != 0) {
 		return -EINVAL;
@@ -5951,6 +5958,7 @@ bdev_io_complete(void *ctx)
 		spdk_histogram_data_tally(bdev_io->internal.ch->histogram, tsc_diff);
 	}
 
+	// 如果请求执行成功，更新统计信息
 	if (bdev_io->internal.status == SPDK_BDEV_IO_STATUS_SUCCESS) {
 		switch (bdev_io->type) {
 		case SPDK_BDEV_IO_TYPE_READ:
@@ -6012,8 +6020,10 @@ bdev_io_complete(void *ctx)
 	assert(bdev_io->internal.cb != NULL);
 	assert(spdk_get_thread() == spdk_bdev_io_get_thread(bdev_io));
 
+	// 调用用户注册的回调函数，在internal里的
+	// 如果有vhost_blk的话，vhost_blk 在bdev之上
 	bdev_io->internal.cb(bdev_io, bdev_io->internal.status == SPDK_BDEV_IO_STATUS_SUCCESS,
-			     bdev_io->internal.caller_ctx);
+			     bdev_io->internal.caller_ctx); 
 }
 
 static void bdev_destroy_cb(void *io_device);
@@ -6062,7 +6072,7 @@ spdk_bdev_io_complete(struct spdk_bdev_io *bdev_io, enum spdk_bdev_io_status sta
 	struct spdk_bdev_channel *bdev_ch = bdev_io->internal.ch;
 	struct spdk_bdev_shared_resource *shared_resource = bdev_ch->shared_resource;
 
-	bdev_io->internal.status = status;
+	bdev_io->internal.status = status;  // 更新状态信息
 
 	if (spdk_unlikely(bdev_io->type == SPDK_BDEV_IO_TYPE_RESET)) {
 		bool unlock_channels = false;

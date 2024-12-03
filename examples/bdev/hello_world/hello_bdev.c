@@ -111,7 +111,7 @@ write_complete(struct spdk_bdev_io *bdev_io, bool success, void *cb_arg)
 	struct hello_context_t *hello_context = cb_arg;
 
 	/* Complete the I/O */
-	spdk_bdev_free_io(bdev_io);
+	spdk_bdev_free_io(bdev_io);  // 释放bdev_io
 
 	if (success) {
 		SPDK_NOTICELOG("bdev io write completed successfully\n");
@@ -303,6 +303,8 @@ main(int argc, char **argv)
 	 * error occurs, spdk_app_start() will return with rc even without calling
 	 * hello_start().
 	 */
+	// 根据配置文件指明的物理核启动reactors线程(主线程最终也成为一个reactor)。
+    // 这些reactors线程会执行轮循函数，直到外部将服务状态置为退出 
 	rc = spdk_app_start(&opts, hello_start, &hello_context);
 	if (rc) {
 		SPDK_ERRLOG("ERROR starting application\n");
