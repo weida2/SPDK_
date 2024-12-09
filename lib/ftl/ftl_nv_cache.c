@@ -153,6 +153,7 @@ ftl_nv_cache_init(struct spdk_ftl_dev *dev)
 	assert(offset <= nvc_data_offset(nv_cache) + nvc_data_blocks(nv_cache));
 
 	/* Start compaction when full chunks exceed given % of entire chunks */
+	// 当剩余chunk的数量小于chunk_compaction_threshold时，开始compaction
 	nv_cache->chunk_compaction_threshold = nv_cache->chunk_count *
 					       dev->conf.nv_cache.chunk_compaction_threshold / 100;
 	TAILQ_INIT(&nv_cache->compactor_list);

@@ -178,6 +178,7 @@ struct ftl_rq_entry {
  * IO requests (as valid blocks that need to be relocated may not be contiguous) - utilizing
  * the ftl_rq_entry array
  */
+// 中间请求
 struct ftl_rq {
 	struct spdk_ftl_dev *dev;
 

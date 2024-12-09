@@ -17,6 +17,7 @@
 
 #include "bdev_ftl.h"
 
+// 又将 spdk_ftl_dev 向上抽象一层 ftl_bdev
 struct ftl_bdev {
 	struct spdk_bdev	bdev;
 	struct spdk_ftl_dev	*dev;
@@ -320,7 +321,7 @@ bdev_ftl_create_cb(struct spdk_ftl_dev *dev, void *ctx, int status)
 	SPDK_DEBUGLOG(bdev_ftl, "\tnum_blocks:\t%"PRIu64"\n", attrs.num_blocks);
 
 	ftl_bdev->bdev.ctxt = ftl_bdev;
-	ftl_bdev->bdev.fn_table = &ftl_fn_table;
+	ftl_bdev->bdev.fn_table = &ftl_fn_table;  // 注册spdk块设备的请求提交函数
 	ftl_bdev->bdev.module = &g_ftl_if;
 
 	status = spdk_bdev_register(&ftl_bdev->bdev);
@@ -388,11 +389,14 @@ bdev_ftl_create_bdev(const struct spdk_ftl_conf *conf, ftl_bdev_init_fn cb, void
 	struct spdk_bdev_desc *base_bdev_desc, *cache_bdev_desc;
 	int rc;
 
+	// 1.打开base_bdev
 	rc = spdk_bdev_open_ext(conf->base_bdev, false, bdev_ftl_create_bdev_event_cb, NULL,
 				&base_bdev_desc);
 	if (rc) {
 		return rc;
 	}
+
+	// 2.打开cache_bdev
 	rc = spdk_bdev_open_ext(conf->cache_bdev, false, bdev_ftl_create_bdev_event_cb, NULL,
 				&cache_bdev_desc);
 	if (rc) {

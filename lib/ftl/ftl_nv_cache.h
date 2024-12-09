@@ -88,6 +88,8 @@ struct ftl_nv_cache_chunk_md {
 	uint8_t reserved[4052];
 } __attribute__((packed));
 
+// 这里说明了chunk自带metadata的大小是4KB 64*(64B VSS)
+// VSS + p2l_check = 8B(seqid) + 8B(c_seqid) + 4*7(r/w_wp+nw/ns/nc_blks+state+p2l_cs)B + 4052
 #define FTL_NV_CACHE_CHUNK_MD_SIZE sizeof(struct ftl_nv_cache_chunk_md)
 SPDK_STATIC_ASSERT(FTL_NV_CACHE_CHUNK_MD_SIZE == FTL_BLOCK_SIZE,
 		   "FTL NV Chunk metadata size is invalid");
@@ -186,6 +188,7 @@ struct ftl_nv_cache {
 	uint64_t chunk_comp_count;
 
 	/* Chunks being freed */
+	// unknown
 	TAILQ_HEAD(, ftl_nv_cache_chunk) needs_free_persist_list;
 	uint64_t chunk_free_persist_count;
 
@@ -193,19 +196,21 @@ struct ftl_nv_cache {
 	uint64_t compaction_active_count;
 	uint64_t chunk_compaction_threshold;
 
+	// nvcache 目前所有的chunk
 	struct ftl_nv_cache_chunk *chunks;
 
 	uint64_t last_seq_id;
 
 	uint64_t chunk_free_target;
-
+	
+	// compaction 如下为统计信息	
 	/* Simple moving average of recent compaction velocity values */
 	double compaction_sma;
 
 #define FTL_NV_CACHE_COMPACTION_SMA_N (FTL_NV_CACHE_NUM_COMPACTORS * 2)
 	/* Circular buffer holding values for calculating compaction SMA */
 	struct compaction_bw_stats {
-		double buf[FTL_NV_CACHE_COMPACTION_SMA_N];
+		double buf[FTL_NV_CACHE_COMPACTION_SMA_N];  // 16
 		ptrdiff_t first;
 		size_t count;
 		double sum;

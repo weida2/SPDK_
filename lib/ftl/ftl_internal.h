@@ -57,12 +57,15 @@ enum ftl_md_status {
 	FTL_MD_INVALID_SIZE
 };
 
+// 每个16B
 struct ftl_p2l_map_entry {
 	uint64_t lba;
-	uint64_t seq_id;
+	uint64_t seq_id;  // 这里记录 seq_id 用于一致性？
 };
 
 /* Number of LBAs that could be stored in a single block */
+// 这里相当于一个page页/block能存储的LBA数 = p2l_map_entry数 = Chunk中的block数
+// 4096/16=256个条目,所以p2l条目数为256，也即Chunk中的block数为256，
 #define FTL_NUM_LBA_IN_BLOCK	(FTL_BLOCK_SIZE / sizeof(struct ftl_p2l_map_entry))
 
 /*
@@ -75,16 +78,19 @@ struct ftl_p2l_map_entry {
  */
 struct ftl_p2l_map {
 	/* Number of valid LBAs */
+	// 该chunk上的有效blocks数,类似有效页数
 	size_t					num_valid;
 
 	/* P2L map's reference count, prevents premature release of resources during dirty shutdown recovery for open bands */
 	size_t					ref_cnt;
 
 	/* Bitmap of valid LBAs */
+	// 有效页位图，存在于 ftl_p2l_map 和 spdk_ftl_dev 中
 	struct ftl_bitmap			*valid;
 
 	/* P2L map (only valid for open/relocating bands) */
 	union {
+		// 真正的 P2L map_entry 映射
 		struct ftl_p2l_map_entry	*band_map;
 		void				*chunk_map;
 	};
@@ -97,6 +103,7 @@ struct ftl_p2l_map {
 	};
 
 	/* P2L checkpointing region */
+	// use for Crash recovery(Concurrency Consistency)
 	struct ftl_p2l_ckpt			*p2l_ckpt;
 };
 

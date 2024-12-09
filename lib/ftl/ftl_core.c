@@ -376,6 +376,7 @@ queue_io(struct spdk_ftl_dev *dev, struct ftl_io *io)
 	size_t result;
 	struct ftl_io_channel *ioch = ftl_io_channel_get_ctx(io->ioch);
 
+	// 将ftl_io 入队到 ftl_io_channel的sq队列
 	result = spdk_ring_enqueue(ioch->sq, (void **)&io, 1, NULL);
 	if (spdk_unlikely(0 == result)) {
 		return -EAGAIN;
@@ -409,11 +410,14 @@ spdk_ftl_writev(struct spdk_ftl_dev *dev, struct ftl_io *io, struct spdk_io_chan
 		return -EBUSY;
 	}
 
+	// 将bdev_io 转化成 ftl_io
+	// 给ftl_io初始化
 	rc = ftl_io_init(ch, io, lba, lba_cnt, iov, iov_cnt, cb_fn, cb_arg, FTL_IO_WRITE);
 	if (rc) {
 		return rc;
 	}
-
+	
+	// io排队
 	return queue_io(dev, io);
 }
 
@@ -539,6 +543,7 @@ ftl_process_io_channel(struct spdk_ftl_dev *dev, struct ftl_io_channel *ioch)
 	void *ios[FTL_IO_QUEUE_BATCH];
 	size_t count, i;
 
+	// 1.从ftl_io channel的sq队列中一次批处理取出16个ftl_io
 	count = spdk_ring_dequeue(ioch->sq, ios, FTL_IO_QUEUE_BATCH);
 	if (count == 0) {
 		return;
@@ -546,6 +551,7 @@ ftl_process_io_channel(struct spdk_ftl_dev *dev, struct ftl_io_channel *ioch)
 
 	for (i = 0; i < count; i++) {
 		struct ftl_io *io = ios[i];
+		// 2.将ftl_io放入ftl_dev 的rd_sq, wr_sq, unmap_sq各个提交队列里 
 		start_io(io);
 	}
 }
@@ -639,6 +645,8 @@ ftl_process_io_queue(struct spdk_ftl_dev *dev)
 	/* TODO: Try to figure out a mechanism to batch more requests at the same time,
 	 * with keeping enough resources (pinned pages), between reads, writes and gc/compaction
 	 */
+	// 1.从读提交队列取出一个读请求，然后pin住
+	// 	pin住
 	if (!TAILQ_EMPTY(&dev->rd_sq)) {
 		io = TAILQ_FIRST(&dev->rd_sq);
 		TAILQ_REMOVE(&dev->rd_sq, io, queue_entry);
@@ -646,6 +654,8 @@ ftl_process_io_queue(struct spdk_ftl_dev *dev)
 		ftl_io_pin(io);
 	}
 
+	// 2.如果写提交队列不为空，且nv_cache的block提交数未达到阈值，则取出ftl_io做ftl_nv_cache_write处理.
+	//   如果ftl_io写失败，则再插入dev写提交队列
 	while (!TAILQ_EMPTY(&dev->wr_sq) && !ftl_nv_cache_throttle(dev)) {
 		io = TAILQ_FIRST(&dev->wr_sq);
 		TAILQ_REMOVE(&dev->wr_sq, io, queue_entry);
@@ -656,6 +666,7 @@ ftl_process_io_queue(struct spdk_ftl_dev *dev)
 		}
 	}
 
+	// 3.同理处理unmap提交队列
 	if (!TAILQ_EMPTY(&dev->unmap_sq) && dev->unmap_qd == 0) {
 		io = TAILQ_FIRST(&dev->unmap_sq);
 		TAILQ_REMOVE(&dev->unmap_sq, io, queue_entry);
@@ -672,6 +683,8 @@ ftl_process_io_queue(struct spdk_ftl_dev *dev)
 		}
 	}
 
+	// 0.处理 ftl_io_channel 队列里的每个ftl_io通道
+	//   从每个ftl_io_channel的sq队列中取出ftl_io，然后放入ftl_dev的rd_sq, wr_sq, unmap_sq队列
 	TAILQ_FOREACH(ioch, &dev->ioch_queue, entry) {
 		ftl_process_io_channel(dev, ioch);
 	}
@@ -688,10 +701,17 @@ ftl_core_poller(void *ctx)
 		return SPDK_POLLER_IDLE;
 	}
 
+	// 1.处理用户io
+	// 向nv_cache中写数据
 	ftl_process_io_queue(dev);
+	// 2.1 处理base-ssd的compaction
+	// 向base-ssd中迁移数据
 	ftl_writer_run(&dev->writer_user);
+	// 2.2 处理base-ssd的gc
+	// 在base-ssd中进行gc
 	ftl_writer_run(&dev->writer_gc);
 	ftl_reloc(dev->reloc);
+	// 3.处理nv_cache的compaction
 	ftl_nv_cache_process(dev);
 	ftl_l2p_process(dev);
 
@@ -716,6 +736,7 @@ ftl_band_get_next_free(struct spdk_ftl_dev *dev)
 	return band;
 }
 
+// 全局读写缓冲
 void *g_ftl_write_buf;
 void *g_ftl_read_buf;
 

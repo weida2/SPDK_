@@ -224,6 +224,7 @@ ftl_io_complete(struct ftl_io *io)
 	io->done = true;
 
 	if (io->flags & FTL_IO_PINNED) {
+		// io完成验证
 		ftl_io_complete_verify(io);
 		ftl_l2p_unpin(io->dev, io->lba, io->num_blocks);
 	}

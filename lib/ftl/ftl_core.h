@@ -73,6 +73,7 @@ struct spdk_ftl_dev {
 	bool				io_device_registered;
 
 	/* Management process to be continued after IO device unregistration completes */
+	// unkonwn??
 	struct ftl_mngt_process		*unregister_process;
 
 	/* Non-volatile write buffer cache */
@@ -121,6 +122,8 @@ struct spdk_ftl_dev {
 	uint64_t			num_lbas;
 
 	/* P2L valid map */
+	// use for improving reloc
+	// 这里是运行时的内存结构
 	struct ftl_bitmap		*valid_map;
 
 	/* Metadata size */
@@ -136,6 +139,7 @@ struct spdk_ftl_dev {
 	uint32_t			num_inflight;
 
 	/* Manages data relocation */
+	// 用于GC数据迁移
 	struct ftl_reloc		*reloc;
 
 	/* Thread on which the poller is running */
@@ -144,10 +148,10 @@ struct spdk_ftl_dev {
 	/* IO channel to the FTL device, used for internal management operations
 	 * consuming FTL's external API
 	 */
-	struct spdk_io_channel		*ioch;
+	struct spdk_io_channel		*ioch;  // ✔
 
 	/* Underlying device IO channel */
-	struct spdk_io_channel		*base_ioch;
+	struct spdk_io_channel		*base_ioch;  // ✔ 
 
 	/* Poller */
 	struct spdk_poller		*core_poller;
@@ -179,6 +183,7 @@ struct spdk_ftl_dev {
 	bool				init_retry;
 
 	/* P2L checkpointing */
+	// use for Crash recovery(Concurrency Consistency)
 	struct {
 		/* Free regions */
 		TAILQ_HEAD(, ftl_p2l_ckpt)	free;

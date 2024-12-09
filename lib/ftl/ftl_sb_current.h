@@ -13,6 +13,7 @@
 #define FTL_SB_VERSION_CURRENT			FTL_SB_VERSION_4
 
 struct ftl_superblock {
+	// crc, version, magic
 	struct ftl_superblock_header	header;
 
 	struct spdk_uuid		uuid;
@@ -27,6 +28,7 @@ struct ftl_superblock {
 	uint64_t			lba_cnt;
 
 	/* Percentage of base device blocks not exposed to the user */
+	// OP空间
 	uint64_t			overprovisioning;
 
 	/* Maximum IO depth per band relocate */
