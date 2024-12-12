@@ -275,6 +275,7 @@ ftl_nv_cache_get_wr_buffer(struct ftl_nv_cache *nv_cache, struct ftl_io *io)
 			}
 		}
 
+		// 获取当前chunk可用的空间
 		free_space = chunk_get_free_space(nv_cache, chunk);
 
 		if (free_space >= num_blocks) {
@@ -287,6 +288,7 @@ ftl_nv_cache_get_wr_buffer(struct ftl_nv_cache *nv_cache, struct ftl_io *io)
 			io->nv_cache_chunk = chunk;
 
 			/* Move write pointer */
+			// 推进chunk的写指针
 			chunk->md->write_pointer += num_blocks;
 			break;
 		}
@@ -303,10 +305,16 @@ ftl_nv_cache_get_wr_buffer(struct ftl_nv_cache *nv_cache, struct ftl_io *io)
 		chunk->md->write_pointer += free_space;
 
 		if (chunk->md->blocks_written == chunk_tail_md_offset(nv_cache)) {
+			// chunk的写满了，需要关闭
+			// 此时将chunk的p2l metadata数据写入到 cache-ssd 中
+			// size = tail_md_chunk_blocks
 			ftl_chunk_close(chunk);
+			// 不过没看到其将close chunk放到chunk_full_list
 		}
 	} while (1);
 
+	// 这里返回的address是chunk的offset + chunk的write_pointer
+	// 相当于 lba，第几个block
 	return address;
 }
 
@@ -318,6 +326,8 @@ ftl_nv_cache_fill_md(struct ftl_io *io)
 	union ftl_md_vss *metadata = io->md;
 	uint64_t lba = ftl_io_get_lba(io, 0);
 
+	// per data block' vss' metadata
+	// fill it's vss metadata
 	for (i = 0; i < io->num_blocks; ++i, lba++, metadata++) {
 		metadata->nv_cache.lba = lba;
 		metadata->nv_cache.seq_id = chunk->md->seq_id;
@@ -355,6 +365,7 @@ is_chunk_compacted(struct ftl_nv_cache_chunk *chunk)
 {
 	assert(chunk->md->blocks_written != 0);
 
+	// 获取chunk中用于用户的block数
 	if (chunk_user_blocks_written(chunk) == chunk->md->blocks_compacted) {
 		return true;
 	}
@@ -436,12 +447,15 @@ chunk_free_cb(int status, void *ctx)
 	if (spdk_likely(!status)) {
 		struct ftl_nv_cache *nv_cache = chunk->nv_cache;
 
+		// 1. 将chunk放到chunk_free_list中,同时将chunk的状态设置为 FREE
+		//    同时增减chunk_free_persist_count, chunk_free_count, chunk_free_count
 		nv_cache->chunk_free_persist_count--;
 		TAILQ_INSERT_TAIL(&nv_cache->chunk_free_list, chunk, entry);
 		nv_cache->chunk_free_count++;
 		nv_cache->chunk_full_count--;
 		chunk->md->state = FTL_CHUNK_STATE_FREE;
 		chunk->md->close_seq_id = 0;
+		// 2. 将chunk->nv_cache->free_chunk_md_pool内存池中的chunk->p2l_map->chunk_dma_md 释放
 		ftl_chunk_free_chunk_free_entry(chunk);
 	} else {
 #ifdef SPDK_FTL_RETRY_ON_ERROR
@@ -464,6 +478,7 @@ ftl_chunk_persist_free_state(struct ftl_nv_cache *nv_cache)
 
 	TAILQ_FOREACH_SAFE(chunk, &nv_cache->needs_free_persist_list, entry, tchunk) {
 		p2l_map = &chunk->p2l_map;
+		// 1.重置 chunk->p2l_map->chunk_dma_md 元数据
 		rc = ftl_chunk_alloc_chunk_free_entry(chunk);
 		if (rc) {
 			break;
@@ -471,13 +486,16 @@ ftl_chunk_persist_free_state(struct ftl_nv_cache *nv_cache)
 
 		TAILQ_REMOVE(&nv_cache->needs_free_persist_list, chunk, entry);
 
+		// 2. 将chunk的p2l_map->chunk_dma_md的状态设置为 FREE 状态
 		memcpy(p2l_map->chunk_dma_md, chunk->md, region->entry_size * FTL_BLOCK_SIZE);
 		p2l_map->chunk_dma_md->state = FTL_CHUNK_STATE_FREE;
 		p2l_map->chunk_dma_md->close_seq_id = 0;
 		p2l_map->chunk_dma_md->p2l_map_checksum = 0;
-
+		// 3. 持久化chunk的p2l_map->chunk_dma_md 元数据
 		ftl_md_persist_entry(md, get_chunk_idx(chunk), p2l_map->chunk_dma_md, NULL,
 				     chunk_free_cb, chunk, &chunk->md_persist_entry_ctx);
+					// 4. chunk_free_cb 回调函数将chunk放到chunk_free_list中,同时
+					//    将chunk的状态设置为 FREE
 	}
 }
 
@@ -517,20 +535,26 @@ chunk_compaction_advance(struct ftl_nv_cache_chunk *chunk, uint64_t num_blocks)
 	struct ftl_nv_cache *nv_cache = chunk->nv_cache;
 	uint64_t tsc = spdk_thread_get_last_tsc(spdk_get_thread());
 
+	// 1.统计compaction的持续时间
 	chunk->compaction_length_tsc += tsc - chunk->compaction_start_tsc;
 	chunk->compaction_start_tsc = tsc;
 
 	chunk->md->blocks_compacted += num_blocks;
+
+	// 2.判断chunk里用户写的block是否等于compacted的block
 	if (!is_chunk_compacted(chunk)) {
 		return;
 	}
 
 	/* Remove chunk from compacted list */
+	// 3.将chunk从compacted list中移除
 	TAILQ_REMOVE(&nv_cache->chunk_comp_list, chunk, entry);
 	nv_cache->chunk_comp_count--;
 
+	// 4.统计compact的带宽
 	compaction_stats_update(chunk);
 
+	// 5.将chunk的元数据清空,然后放到needs_free_persist_list
 	ftl_chunk_free(chunk);
 }
 
@@ -543,6 +567,7 @@ is_compaction_required(struct ftl_nv_cache *nv_cache)
 		return false;
 	}
 
+	// 满的chunk数量 = full - 正在compaction的chunk数量
 	full = nv_cache->chunk_full_count - nv_cache->compaction_active_count;
 	if (full >= nv_cache->chunk_compaction_threshold) {
 		return true;
@@ -677,13 +702,16 @@ get_chunk_for_compaction(struct ftl_nv_cache *nv_cache)
 {
 	struct ftl_nv_cache_chunk *chunk = NULL;
 
+	// 1.从chunk_comp_list中获取chunk
 	if (!TAILQ_EMPTY(&nv_cache->chunk_comp_list)) {
 		chunk = TAILQ_FIRST(&nv_cache->chunk_comp_list);
+		// 1.1.如果chunk的read_pointer != 用于写的blocks_written,则该chunk还有有效数据需要读取
 		if (is_chunk_to_read(chunk)) {
 			return chunk;
 		}
 	}
 
+	// 2.从chunk_full_list中获取chunk
 	if (!TAILQ_EMPTY(&nv_cache->chunk_full_list)) {
 		chunk = TAILQ_FIRST(&nv_cache->chunk_full_list);
 		TAILQ_REMOVE(&nv_cache->chunk_full_list, chunk, entry);
@@ -693,6 +721,7 @@ get_chunk_for_compaction(struct ftl_nv_cache *nv_cache)
 		return NULL;
 	}
 
+	// 2.1 将从chunk_full_list中获取chunk的放到从chunk_comp_list中获取chunk中
 	if (spdk_likely(chunk)) {
 		assert(chunk->md->write_pointer != 0);
 		TAILQ_INSERT_HEAD(&nv_cache->chunk_comp_list, chunk, entry);
@@ -772,8 +801,10 @@ compaction_process(struct ftl_nv_cache_compactor *compactor)
 	int rc;
 
 	/* Check if all read blocks done */
+	// 1.先检查compactor
 	assert(compactor->rd->iter.idx <= compactor->rd->iter.count);
 	if (compactor->rd->iter.idx < compactor->rd->iter.count) {
+		// 1.1 如果compactor没有读完，则继续读
 		compaction_process_finish_read(compactor);
 		return;
 	}
@@ -781,24 +812,32 @@ compaction_process(struct ftl_nv_cache_compactor *compactor)
 	/*
 	 * Get currently handled chunk
 	 */
+	// 2.获取当前要处理的chunk
 	chunk = get_chunk_for_compaction(nv_cache);
 	if (!chunk) {
 		/* No chunks to compact, pad this request */
+		// 2.1 如果没有要处理的chunk, 填充空的compactor->wr ftl_rq 插入到base-ssd writer_user的ftl_rq队列中 
 		compaction_process_pad(compactor);
 		ftl_writer_queue_rq(&dev->writer_user, compactor->wr);
 		return;
 	}
 
+	// 统计compaction的开始时间
 	chunk->compaction_start_tsc = spdk_thread_get_last_tsc(spdk_get_thread());
 
 	/*
 	 * Get range of blocks to read
 	 */
+	// 3.获取chunk要读取的block的数量
+	// to_read = chunk->user_write_blocks - chunk->md->read_pointer
 	to_read = chunk_blocks_to_read(chunk);
 	assert(to_read > 0);
 
+	// addr = chunk->offset + chunk->md->read_pointer + dev->layout.base.total_blocks
+	// begin (从valid_map中找到对应的bit)
 	addr = ftl_addr_from_nvc_offset(dev, chunk->offset + chunk->md->read_pointer);
 	begin = ftl_bitmap_find_first_set(dev->valid_map, addr, addr + to_read);
+	// to_read, begin - addr -> offset 
 	if (begin != UINT64_MAX) {
 		offset = spdk_min(begin - addr, to_read);
 	} else {
@@ -807,33 +846,45 @@ compaction_process(struct ftl_nv_cache_compactor *compactor)
 
 	if (offset) {
 		chunk->md->read_pointer += offset;
+		// 3.1 num_compact = offset
+		// 处理compacted' chunk,同时统计compact的带宽信息
+		// 将chunk的元数据清空,将chunk从chunk_comp_list移出然后放到needs_free_persist_list
 		chunk_compaction_advance(chunk, offset);
 		to_read -= offset;
 		if (!to_read) {
+			// 3.2 如果to_read == 0,则compactor结束
 			compactor_deactivate(compactor);
 			return;
 		}
 	}
 
+	// end (从valid_map中找到对应的bit)
+	// begin -> addr, (end - begin) -> to_read
 	end = ftl_bitmap_find_first_clear(dev->valid_map, begin + 1, begin + to_read);
 	if (end != UINT64_MAX) {
 		to_read = end - begin;
 	}
-
 	addr = begin;
 	to_read = spdk_min(to_read, compactor->rd->num_blocks);
 
 	/* Read data and metadata from NV cache */
+	// 4.从nv_cache的addr位置读取to_read个block的数据放到compactor->rd中
+	// 4.1 之后调用compaction_process_read_cb回调函数->同时调用compaction_process_pin_lba
+	// 4.2 之后调用compaction_process_pin_lba_cb回调函数->同时调用compaction_process_finish_read
+	// 	   在compaction_process_finish_read函数中将 compactor->rd中的数据拷贝到compactor->wr中,
+	//     然后将compactor->wr请求插入到base-ssd writer_user的ftl_rq队列中
 	rc = compaction_submit_read(compactor, addr, to_read);
 	if (spdk_unlikely(rc)) {
 		/* An error occurred, inactivate this compactor, it will retry
 		 * in next iteration
 		 */
+		// 4.3 如果读失败，则直接compact结束
 		compactor_deactivate(compactor);
 		return;
 	}
 
 	/* IO has started, initialize compaction */
+	// 5.设置compactor->rd用于回调处理
 	compactor->rd->owner.priv = chunk;
 	compactor->rd->iter.idx = 0;
 	compactor->rd->iter.count = to_read;
@@ -912,6 +963,7 @@ compaction_process_finish_read(struct ftl_nv_cache_compactor *compactor)
 	const uint64_t num_entries = wr->num_blocks;
 	uint64_t tsc = spdk_thread_get_last_tsc(spdk_get_thread());
 
+	// 1.再次更新compaction的持续时间
 	chunk->compaction_length_tsc += tsc - chunk->compaction_start_tsc;
 	chunk->compaction_start_tsc = tsc;
 
@@ -924,6 +976,7 @@ compaction_process_finish_read(struct ftl_nv_cache_compactor *compactor)
 	cache_addr += rd->iter.idx;
 	iter = &wr->entries[wr->iter.idx];
 
+	// 2.循环处理，将compactor->rd中的数据拷贝到compactor->wr中
 	while (wr->iter.idx < num_entries && rd->iter.idx < rd->iter.count) {
 		/* Get metadata */
 		md = rd->entries[rd->iter.idx].io_md;
@@ -937,6 +990,7 @@ compaction_process_finish_read(struct ftl_nv_cache_compactor *compactor)
 		current_addr = ftl_l2p_get(dev, md->nv_cache.lba);
 		if (current_addr == cache_addr) {
 			/* Swap payload */
+			// 2.1 将compactor->rd中的数据拷贝到compactor->wr中
 			ftl_rq_swap_payload(wr, wr->iter.idx, rd, rd->iter.idx);
 
 			/*
@@ -967,11 +1021,14 @@ compaction_process_finish_read(struct ftl_nv_cache_compactor *compactor)
 		/*
 		 * Request contains data to be placed on FTL, compact it
 		 */
+		// 3.将compactor->wr中的数据写入到 base-SSD 的 writer_user 的 ftl_rq 队列中
 		ftl_writer_queue_rq(&dev->writer_user, wr);
 	} else {
+		// 0.继续compact
 		if (is_compaction_required(compactor->nv_cache)) {
 			compaction_process(compactor);
 		} else {
+			// 出错，comcactor结束, 把compactor放到compactor_list中
 			compactor_deactivate(compactor);
 		}
 	}
@@ -1028,6 +1085,7 @@ ftl_nv_cache_submit_cb_done(struct ftl_io *io)
 {
 	struct ftl_nv_cache *nv_cache = &io->dev->nv_cache;
 
+	// 推进chunk已经写的block数
 	chunk_advance_blocks(nv_cache, io->nv_cache_chunk, io->num_blocks);
 	io->nv_cache_chunk = NULL;
 
@@ -1119,6 +1177,8 @@ ftl_nv_cache_pin_cb(struct spdk_ftl_dev *dev, int status, struct ftl_l2p_pin_ctx
 
 	ftl_trace_submission(io->dev, io, io->addr, io->num_blocks);
 
+	// 这里真正将数据写下去
+	// 包括 io的数据和metadata(4KB data + 64B VSS metadata)
 	nv_cache_write(io);
 }
 
@@ -1134,18 +1194,21 @@ ftl_nv_cache_write(struct ftl_io *io)
 	}
 
 	/* Reserve area on the write buffer cache */
+	// 1.获取nv_cache的当前写入的chunk的lba地址
 	cache_offset = ftl_nv_cache_get_wr_buffer(&dev->nv_cache, io);
 	if (cache_offset == FTL_LBA_INVALID) {
 		/* No free space in NV cache, resubmit request */
 		ftl_mempool_put(dev->nv_cache.md_pool, io->md);
 		return false;
 	}
+	// 2.chunk's lba + base'blocks
 	io->addr = ftl_addr_from_nvc_offset(dev, cache_offset);
 	io->nv_cache_chunk = dev->nv_cache.chunk_current;
 
 	ftl_nv_cache_fill_md(io);
+	// ftl_l2p_pin -> ftl_nv_cache_pin_cb -> nv_cache_write -> ftl_nv_cache_submit_cb -> ftl_nv_cache_l2p_update -> ftl_nv_cache_submit_cb_done -> ftl_io_complete -> ftl_io_cb -> spdk_ring_enqueue(CQ)
 	ftl_l2p_pin(io->dev, io->lba, io->num_blocks,
-		    ftl_nv_cache_pin_cb, io,
+		    ftl_nv_cache_pin_cb, io,   // 回调参数为io
 		    &io->l2p_pin_ctx);
 
 	dev->nv_cache.throttle.blocks_submitted += io->num_blocks;
@@ -1322,6 +1385,10 @@ ftl_nv_cache_process(struct spdk_ftl_dev *dev)
 
 	assert(dev->nv_cache.bdev_desc);
 
+	// 1.如果打开chunk的数量小于最大打开chunk数量(2)，且没有halt，且free list不为空
+	// 则从free_list中取出一个chunk，打开这个chunk,同时放入open_list中,
+	// 在ftl_chunk_open中会将chunk的p2l_map->chunk_dma_md 元数据持久化
+	// 在chunk_open_cb 里将 chunk 的状态设置为 open
 	if (nv_cache->chunk_open_count < FTL_MAX_OPEN_CHUNKS && spdk_likely(!nv_cache->halt) &&
 	    !TAILQ_EMPTY(&nv_cache->chunk_free_list)) {
 		struct ftl_nv_cache_chunk *chunk = TAILQ_FIRST(&nv_cache->chunk_free_list);
@@ -1332,25 +1399,37 @@ ftl_nv_cache_process(struct spdk_ftl_dev *dev)
 		ftl_chunk_open(chunk);
 	}
 
+	// 2.判断是否需要compaction
+	// 如果full_chunk数量大于compaction的阈值，且compactor_list(每个entry包括wr/rd的ftl_rq)不为空
 	if (is_compaction_required(nv_cache) && !TAILQ_EMPTY(&nv_cache->compactor_list)) {
+		// 2.1 从 compactor_list 获取 compactor
 		struct ftl_nv_cache_compactor *comp =
 			TAILQ_FIRST(&nv_cache->compactor_list);
 
 		TAILQ_REMOVE(&nv_cache->compactor_list, comp, entry);
 
+		// 2.2 开始进行compact
 		compaction_process_start(comp);
 	}
 
+	// 3.处理 needs_free_persist_list 的 chunk
+	// chunk 在compact过程中变化
+	// chunk_full_list -> chunk_comp_list -> needs_free_persist_list 
+	// 在 ftl_chunk_persist_free_state 之后的变化
+	// needs_free_persist_list -> chunk_free_list
 	ftl_chunk_persist_free_state(nv_cache);
 
+	// 4.如果halt了，重置所有的compactor压缩器
 	if (spdk_unlikely(nv_cache->halt)) {
 		struct ftl_nv_cache_compactor *compactor;
 
 		TAILQ_FOREACH(compactor, &nv_cache->compactor_list, entry) {
+			// 4.1 实际操作unpin compactor->rd/wr 的l2p
 			ftl_nv_cache_compaction_reset(compactor);
 		}
 	}
 
+	// 5.更新throttle统计信息
 	ftl_nv_cache_process_throttle(nv_cache);
 }
 
@@ -1639,6 +1718,7 @@ _ftl_chunk_basic_rq_write(void *_brq)
 	struct spdk_ftl_dev *dev = SPDK_CONTAINEROF(nv_cache, struct spdk_ftl_dev, nv_cache);
 	int rc;
 
+	// 写brq 元数据
 	rc = ftl_nv_cache_bdev_write_blocks_with_md(dev, nv_cache->bdev_desc, nv_cache->cache_ioch,
 			brq->io_payload, NULL, brq->io.addr,
 			brq->num_blocks, write_brq_end, brq);
@@ -1666,6 +1746,7 @@ ftl_chunk_basic_rq_write(struct ftl_nv_cache_chunk *chunk, struct ftl_basic_rq *
 
 	_ftl_chunk_basic_rq_write(brq);
 
+	// Update chunk->md->write_pointer 
 	chunk->md->write_pointer += brq->num_blocks;
 	dev->stats.io_activity_total += brq->num_blocks;
 }
@@ -1796,6 +1877,7 @@ chunk_map_write_cb(struct ftl_basic_rq *brq)
 		chunk_map_crc = spdk_crc32c_update(p2l_map->chunk_map,
 						   chunk->nv_cache->tail_md_chunk_blocks * FTL_BLOCK_SIZE, 0);
 		memcpy(p2l_map->chunk_dma_md, chunk->md, region->entry_size * FTL_BLOCK_SIZE);
+		// chunk's p2l 标记当前chunk的状态为closed
 		p2l_map->chunk_dma_md->state = FTL_CHUNK_STATE_CLOSED;
 		p2l_map->chunk_dma_md->p2l_map_checksum = chunk_map_crc;
 		ftl_md_persist_entry(md, get_chunk_idx(chunk), chunk->p2l_map.chunk_dma_md,
@@ -1824,7 +1906,12 @@ ftl_chunk_close(struct ftl_nv_cache_chunk *chunk)
 	ftl_basic_rq_set_owner(brq, chunk_map_write_cb, chunk);
 
 	assert(chunk->md->write_pointer == chunk_tail_md_offset(chunk->nv_cache));
+	// brq->io_lba = cur_md_lba
+	// brq->num_blocks = tail_md_chunk_blocks
 	brq->io.addr = chunk->offset + chunk->md->write_pointer;
+
+	SPDK_NOTICELOG("[WZC]chunk->offset = %lu, chunk->md->write_pointer = %lu, brq->io.addr = %lu\n", chunk->offset, chunk->md->write_pointer, brq->io.addr);
+	SPDK_NOTICELOG("[WZC]chunk->compaction_duration = %lu\n", chunk->compaction_length_tsc);
 
 	ftl_chunk_basic_rq_write(chunk, brq);
 }

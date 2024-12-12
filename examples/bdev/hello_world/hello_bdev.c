@@ -136,6 +136,7 @@ hello_write(void *arg)
 	int rc = 0;
 
 	SPDK_NOTICELOG("Writing to the bdev\n");
+	// 将 buff 写入bdev LBA 0的位置写入buff_size大小的数据
 	rc = spdk_bdev_write(hello_context->bdev_desc, hello_context->bdev_io_channel,
 			     hello_context->buff, 0, hello_context->buff_size, write_complete,
 			     hello_context);

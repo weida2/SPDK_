@@ -66,6 +66,7 @@ close_full_bands(struct ftl_writer *writer)
 		}
 
 		TAILQ_REMOVE(&writer->full_bands, band, queue_entry);
+		// 和ftl_chunk_close一样,写满了关闭,同时将band的p2l metadata写入base-ssd
 		ftl_band_close(band);
 	}
 }
@@ -151,6 +152,7 @@ ftl_writer_run(struct ftl_writer *writer)
 			return;
 		}
 
+		// 判断band是打开的就可以写入
 		if (!can_write(writer)) {
 			return;
 		}

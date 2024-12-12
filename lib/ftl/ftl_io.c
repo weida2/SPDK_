@@ -122,7 +122,7 @@ ftl_io_cb(struct ftl_io *io, void *arg, int status)
 
 	if (spdk_unlikely(status)) {
 		io->status = status;
-
+		// 如果未完成，重新丢进rd/wr/unmap_sq
 		if (-EAGAIN == status) {
 			/* IO has to be rescheduled again */
 			switch (io->type) {
@@ -156,6 +156,7 @@ ftl_io_cb(struct ftl_io *io, void *arg, int status)
 		ftl_mempool_put(ioch->map_pool, io->map);
 	}
 
+	// io完成 将ftl_io放到 ftl_io_channel的CQ队列
 	result = spdk_ring_enqueue(ioch->cq, (void **)&io, 1, NULL);
 	assert(result != 0);
 }

@@ -163,6 +163,7 @@ struct ftl_nv_cache {
 	uint64_t chunk_blocks;
 
 	/* Number of blocks in tail md per chunk */
+	// 每个chunk的tail md的所占的block数
 	uint64_t tail_md_chunk_blocks;
 
 	/* Number of chunks */
@@ -188,12 +189,12 @@ struct ftl_nv_cache {
 	uint64_t chunk_comp_count;
 
 	/* Chunks being freed */
-	// unknown
+	// chunk compact 后需要释放的chunk 存储到这个list中
 	TAILQ_HEAD(, ftl_nv_cache_chunk) needs_free_persist_list;
 	uint64_t chunk_free_persist_count;
 
 	TAILQ_HEAD(, ftl_nv_cache_compactor) compactor_list;
-	uint64_t compaction_active_count;
+	uint64_t compaction_active_count;  // 正在进行compaction的chunk数
 	uint64_t chunk_compaction_threshold;
 
 	// nvcache 目前所有的chunk

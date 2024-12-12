@@ -263,7 +263,8 @@ struct ftl_basic_rq {
 	uint64_t num_blocks;
 
 	/* Payload for IO */
-	void *io_payload;
+	// p2l_map
+	void *io_payload;  
 
 	/* Request result status */
 	bool success;

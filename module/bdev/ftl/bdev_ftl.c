@@ -144,9 +144,9 @@ _bdev_ftl_submit_request(struct spdk_io_channel *ch, struct spdk_bdev_io *bdev_i
 
 	case SPDK_BDEV_IO_TYPE_WRITE:
 		return spdk_ftl_writev(ftl_bdev->dev, (struct ftl_io *)bdev_io->driver_ctx,
-				       ch, bdev_io->u.bdev.offset_blocks,
-				       bdev_io->u.bdev.num_blocks, bdev_io->u.bdev.iovs,
-				       bdev_io->u.bdev.iovcnt, bdev_ftl_cb, bdev_io);
+				       ch, bdev_io->u.bdev.offset_blocks,  // ioch, lba
+				       bdev_io->u.bdev.num_blocks, bdev_io->u.bdev.iovs,  // lba_cnt, iov
+				       bdev_io->u.bdev.iovcnt, bdev_ftl_cb, bdev_io);  // iov_cnt, cb_fn, cb_arg
 
 	case SPDK_BDEV_IO_TYPE_UNMAP:
 		return spdk_ftl_unmap(ftl_bdev->dev, (struct ftl_io *)bdev_io->driver_ctx,

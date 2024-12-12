@@ -36,10 +36,11 @@ ftl_band_rq_bdev_write(void *_rq)
 	int rc;
 
 	// 通过 spdk_bdev_write_blocks 函数向base-ssd 写数据
+	// bdev open API
 	rc = spdk_bdev_writev_blocks(dev->base_bdev_desc, dev->base_ioch,
 				     rq->io_vec, rq->io_vec_size,
 				     rq->io.addr, rq->num_blocks,
-				     write_rq_end, rq);
+				     write_rq_end, rq);  // write_rq_end 为回调函数
 
 	if (spdk_unlikely(rc)) {
 		if (rc == -ENOMEM) {
@@ -285,6 +286,7 @@ ftl_band_open(struct ftl_band *band, enum ftl_band_type type)
 	struct ftl_p2l_map *p2l_map = &band->p2l_map;
 
 	ftl_band_set_type(band, type);
+	// band要打开前从prep状态转换为opening状态
 	ftl_band_set_state(band, FTL_BAND_STATE_OPENING);
 
 	memcpy(p2l_map->band_dma_md, band->md, region->entry_size * FTL_BLOCK_SIZE);
@@ -300,6 +302,7 @@ ftl_band_open(struct ftl_band *band, enum ftl_band_type type)
 		ftl_abort();
 	}
 
+	// 将band前面的数据元数据写入后调用band_open_cb 将band状态设置为open
 	ftl_md_persist_entry(md, band->id, p2l_map->band_dma_md, NULL,
 			     band_open_cb, band, &band->md_persist_entry_ctx);
 }

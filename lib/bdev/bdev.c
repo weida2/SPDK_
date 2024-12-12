@@ -4547,6 +4547,7 @@ bdev_write_blocks_with_md(struct spdk_bdev_desc *desc, struct spdk_io_channel *c
 	// 2.填充bio->internal
 	bdev_io_init(bdev_io, bdev, cb_arg, cb);
 
+	// 3.到这里bdev_io对象已经封装完毕,接下来将bdev_io对象向下提交
 	bdev_io_submit(bdev_io);
 	return 0;
 }
@@ -4621,6 +4622,7 @@ bdev_writev_blocks_with_md(struct spdk_bdev_desc *desc, struct spdk_io_channel *
 		return -ENOMEM;
 	}
 
+	// same as bdev_write_blocks_with_md
 	bdev_io->internal.ch = channel;
 	bdev_io->internal.desc = desc;
 	bdev_io->type = SPDK_BDEV_IO_TYPE_WRITE;

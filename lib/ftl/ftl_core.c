@@ -232,6 +232,7 @@ ftl_submit_read(struct ftl_io *io)
 	int rc = 0, num_blocks;
 
 	while (io->pos < io->num_blocks) {
+		// 1.获取要读取的在nvcache上的block地址
 		num_blocks = ftl_get_next_read_addr(io, &addr);
 		rc = num_blocks;
 
@@ -246,6 +247,7 @@ ftl_submit_read(struct ftl_io *io)
 
 		ftl_trace_submission(dev, io, addr, num_blocks);
 
+		// 2.判断读取的地址在 nv_cache 还是 base-SSD
 		if (ftl_addr_in_nvc(dev, addr)) {
 			rc = ftl_nv_cache_read(io, addr, num_blocks, ftl_io_cmpl_cb, io);
 		} else {
@@ -254,6 +256,7 @@ ftl_submit_read(struct ftl_io *io)
 						   addr, num_blocks, ftl_io_cmpl_cb, io);
 		}
 
+		// 2.1 如果请求失败,则将io放入等待队列,重新提交
 		if (spdk_unlikely(rc)) {
 			if (rc == -ENOMEM) {
 				struct spdk_bdev *bdev;
@@ -276,12 +279,14 @@ ftl_submit_read(struct ftl_io *io)
 			}
 		}
 
+		// 3.推进 io_pos
 		ftl_io_inc_req(io);
 		ftl_io_advance(io, num_blocks);
 	}
 
 	/* If we didn't have to read anything from the device, */
 	/* complete the request right away */
+	// 4. io 完成
 	if (ftl_io_done(io)) {
 		ftl_io_complete(io);
 	}
@@ -646,7 +651,7 @@ ftl_process_io_queue(struct spdk_ftl_dev *dev)
 	 * with keeping enough resources (pinned pages), between reads, writes and gc/compaction
 	 */
 	// 1.从读提交队列取出一个读请求，然后pin住
-	// 	pin住
+	// 	pin住, 然后回调函数提交读请求
 	if (!TAILQ_EMPTY(&dev->rd_sq)) {
 		io = TAILQ_FIRST(&dev->rd_sq);
 		TAILQ_REMOVE(&dev->rd_sq, io, queue_entry);
@@ -701,7 +706,7 @@ ftl_core_poller(void *ctx)
 		return SPDK_POLLER_IDLE;
 	}
 
-	// 1.处理用户io
+	// 1.处理 ioch-sq 中的用户io
 	// 向nv_cache中写数据
 	ftl_process_io_queue(dev);
 	// 2.1 处理base-ssd的compaction
