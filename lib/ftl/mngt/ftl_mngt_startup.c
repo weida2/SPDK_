@@ -38,6 +38,7 @@ ftl_mngt_select_restore_mode(struct spdk_ftl_dev *dev,
  * Common startup steps required by FTL in all cases (creation, load, dirty shutdown recovery).
  * Includes actions like opening the devices, calculating the expected size and version of metadata, etc.
  */
+// 1.FTL_startup 所需要的步骤 
 static const struct ftl_mngt_process_desc desc_startup = {
 	.name = "FTL startup",
 	.steps = {

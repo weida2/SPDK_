@@ -179,16 +179,23 @@ ftl_get_next_read_addr(struct ftl_io *io, ftl_addr *addr)
 	size_t i;
 	bool addr_cached = false;
 
+	// 1.检查映射表
+	//  获取当前lba对应的地址盘内区域的地址 addr()
 	*addr = ftl_l2p_get(dev, ftl_io_current_lba(io));
-	io->map[io->pos] = *addr;
+	io->map[io->pos] = *addr;  // io->map[0] = block_oft1 = *addr
+							   // io->map[1] = block_oft2 = next_addr
 
 	/* If the address is invalid, skip it */
 	if (*addr == FTL_ADDR_INVALID) {
+		// 读到无效的地址
 		return -EFAULT;
 	}
 
+	// 2.判断当前块区域地址 addr 是否在 nv_cache 的块区域上
+    //   block_oft1 -> [nv_cache_start_block, nv_cache_end_block]
 	addr_cached = ftl_addr_in_nvc(dev, *addr);
 
+	// 3.处理判断剩下的 ftl_io 的下一个位置的地址
 	for (i = 1; i < ftl_io_iovec_len_left(io); ++i) {
 		next_addr = ftl_l2p_get(dev, ftl_io_get_lba(io, io->pos + i));
 
@@ -200,10 +207,13 @@ ftl_get_next_read_addr(struct ftl_io *io, ftl_addr *addr)
 		 * of base device and first nvc, then they're 'contiguous', but can't be handled
 		 * with one read request.
 		 */
+		// 3.1 下一个位置和现在位置位于同一区域
+		// (以防出现 base-SSD_last_block -> nv_cache_first_block) 的情况
 		if (addr_cached != ftl_addr_in_nvc(dev, next_addr)) {
 			break;
 		}
 
+		// 3.2 检查连续性 
 		if (*addr + i != next_addr) {
 			break;
 		}
@@ -211,6 +221,7 @@ ftl_get_next_read_addr(struct ftl_io *io, ftl_addr *addr)
 		io->map[io->pos + i] = next_addr;
 	}
 
+	// 4.返回符合这样条件的 num_blocks
 	return i;
 }
 
@@ -237,7 +248,9 @@ ftl_submit_read(struct ftl_io *io)
 		rc = num_blocks;
 
 		/* User LBA doesn't hold valid data (trimmed or never written to), fill with 0 and skip this block */
+		// 1.1 如果读取的地址无效,则填充0,并跳过
 		if (ftl_read_canceled(rc)) {
+			// 往用户要读的内存地址填充0
 			memset(ftl_io_iovec_addr(io), 0, FTL_BLOCK_SIZE);
 			ftl_io_advance(io, 1);
 			continue;
@@ -253,7 +266,7 @@ ftl_submit_read(struct ftl_io *io)
 		} else {
 			rc = spdk_bdev_read_blocks(dev->base_bdev_desc, dev->base_ioch,
 						   ftl_io_iovec_addr(io),
-						   addr, num_blocks, ftl_io_cmpl_cb, io);
+						   addr, num_blocks, ftl_io_cmpl_cb, io);   // 读base的话addr 不用额外操作，因为base的空间在前面
 		}
 
 		// 2.1 如果请求失败,则将io放入等待队列,重新提交
@@ -280,7 +293,7 @@ ftl_submit_read(struct ftl_io *io)
 		}
 
 		// 3.推进 io_pos
-		ftl_io_inc_req(io);
+		ftl_io_inc_req(io);   
 		ftl_io_advance(io, num_blocks);
 	}
 
@@ -650,7 +663,7 @@ ftl_process_io_queue(struct spdk_ftl_dev *dev)
 	/* TODO: Try to figure out a mechanism to batch more requests at the same time,
 	 * with keeping enough resources (pinned pages), between reads, writes and gc/compaction
 	 */
-	// 1.从读提交队列取出一个读请求，然后pin住
+	// 1.从读提交队列取出一个读请求
 	// 	pin住, 然后回调函数提交读请求
 	if (!TAILQ_EMPTY(&dev->rd_sq)) {
 		io = TAILQ_FIRST(&dev->rd_sq);
@@ -705,7 +718,10 @@ ftl_core_poller(void *ctx)
 		spdk_poller_unregister(&dev->core_poller);
 		return SPDK_POLLER_IDLE;
 	}
-
+	if (dev->i == 0) {
+		dev->i = 1;
+		SPDK_NOTICELOG("poller start\n");
+	}
 	// 1.处理 ioch-sq 中的用户io
 	// 向nv_cache中写数据
 	ftl_process_io_queue(dev);

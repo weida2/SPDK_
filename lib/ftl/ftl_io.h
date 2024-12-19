@@ -63,9 +63,10 @@ struct ftl_io {
 	struct spdk_io_channel		*ioch;
 
 	/* LBA address */
-	uint64_t			lba;
+	uint64_t			lba;  // io->lba 等于 spdk_bdev_readv/w 传入的 lba
 
 	/* First address of write when sent to cache device */
+	// for write []
 	ftl_addr			addr;
 
 	/* Number of processed blocks */
@@ -87,7 +88,7 @@ struct ftl_io {
 	size_t				iov_pos;
 
 	/* Offset within the iovec (in blocks) */
-	size_t				iov_off;
+	size_t				iov_off;  // 记录当前处理的iov(iov[iov_pos])处理到第几个block
 
 	/* Band this IO is being written to */
 	struct ftl_band			*band;

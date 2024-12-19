@@ -190,6 +190,8 @@ struct spdk_ftl_dev {
 		/* In use regions */
 		TAILQ_HEAD(, ftl_p2l_ckpt)	inuse;
 	} p2l_ckpt;
+
+	int i;
 };
 
 void ftl_apply_limits(struct spdk_ftl_dev *dev);

@@ -76,6 +76,7 @@ struct ftl_nv_cache_chunk_md {
 	uint32_t read_pointer;
 
 	/* Number of compacted (both valid and invalid) blocks */
+	// 包含有效和无效
 	uint32_t blocks_compacted;
 
 	/* Chunk state */
@@ -207,6 +208,8 @@ struct ftl_nv_cache {
 	// compaction 如下为统计信息	
 	/* Simple moving average of recent compaction velocity values */
 	double compaction_sma;
+	
+	uint64_t compaction_read_blocks;
 
 #define FTL_NV_CACHE_COMPACTION_SMA_N (FTL_NV_CACHE_NUM_COMPACTORS * 2)
 	/* Circular buffer holding values for calculating compaction SMA */

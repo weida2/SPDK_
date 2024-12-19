@@ -48,6 +48,7 @@ init_core_thread(struct spdk_ftl_dev *dev)
 		if (spdk_cpuset_parse(&cpumask, dev->conf.core_mask)) {
 			return -EINVAL;
 		}
+		// 1.在指定的cpu core上创建一个 ftl_core_poller 线程
 		dev->core_thread = spdk_thread_create("ftl_core_thread", &cpumask);
 	} else {
 		dev->core_thread = spdk_get_thread();
@@ -103,26 +104,31 @@ allocate_dev(const struct spdk_ftl_conf *conf, int *error)
 		return NULL;
 	}
 
+	// 1.初始化 conf
 	rc = ftl_conf_init_dev(dev, conf);
 	if (rc) {
 		*error = rc;
 		goto error;
 	}
 
+	// 2.初始化 core_thread
 	rc = init_core_thread(dev);
 	if (rc) {
 		*error = rc;
 		goto error;
 	}
 
+	// 3.初始化队列
 	TAILQ_INIT(&dev->rd_sq);
 	TAILQ_INIT(&dev->wr_sq);
 	TAILQ_INIT(&dev->unmap_sq);
 	TAILQ_INIT(&dev->ioch_queue);
 
+	// 4.初始化 writer
 	ftl_writer_init(dev, &dev->writer_user, SPDK_FTL_LIMIT_HIGH, FTL_BAND_TYPE_COMPACTION);
 	ftl_writer_init(dev, &dev->writer_gc, SPDK_FTL_LIMIT_CRIT, FTL_BAND_TYPE_GC);
 
+	dev->i = 0;
 	return dev;
 error:
 	free_dev(dev);
@@ -169,6 +175,7 @@ spdk_ftl_dev_init(const struct spdk_ftl_conf *conf, spdk_ftl_init_fn cb_fn, void
 	ctx->cb_fn = cb_fn;
 	ctx->cb_arg = cb_arg;
 
+	// 1.初始化 spdk_ftl_bdev
 	dev = allocate_dev(conf, &rc);
 	if (!dev) {
 		goto error;

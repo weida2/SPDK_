@@ -158,12 +158,14 @@ found:
 	return ret;
 }
 
+// 从start_bit开始找到第一个为1的bit
 uint64_t
 ftl_bitmap_find_first_set(struct ftl_bitmap *bitmap, uint64_t start_bit, uint64_t end_bit)
 {
 	return ftl_bitmap_find_first(bitmap, start_bit, end_bit, true);
 }
 
+// 从start_bit开始找到第一个为0的bit
 uint64_t
 ftl_bitmap_find_first_clear(struct ftl_bitmap *bitmap, uint64_t start_bit,
 			    uint64_t end_bit)

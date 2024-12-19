@@ -113,6 +113,7 @@ ftl_nv_cache_init(struct spdk_ftl_dev *dev)
 	/*
 	 * Initialize chunk info
 	 */
+	// 1.初始化chunk/block参数
 	nv_cache->chunk_blocks = dev->layout.nvc.chunk_data_blocks;
 	nv_cache->chunk_count = dev->layout.nvc.chunk_count;
 	nv_cache->tail_md_chunk_blocks = ftl_nv_cache_chunk_tail_md_num_blocks(nv_cache);
@@ -125,6 +126,7 @@ ftl_nv_cache_init(struct spdk_ftl_dev *dev)
 		return -1;
 	}
 
+	// 2.初始化 nv_cache 的 chunk 状态链表
 	TAILQ_INIT(&nv_cache->chunk_free_list);
 	TAILQ_INIT(&nv_cache->chunk_open_list);
 	TAILQ_INIT(&nv_cache->chunk_full_list);
@@ -148,15 +150,27 @@ ftl_nv_cache_init(struct spdk_ftl_dev *dev)
 		nvc_validate_md(nv_cache, md);
 		chunk->offset = offset;
 		offset += nv_cache->chunk_blocks;
+		// 初始化时所有的chunk都是free状态，都插入到chunk_free_list中
 		TAILQ_INSERT_TAIL(&nv_cache->chunk_free_list, chunk, entry);
 	}
 	assert(offset <= nvc_data_offset(nv_cache) + nvc_data_blocks(nv_cache));
 
 	/* Start compaction when full chunks exceed given % of entire chunks */
-	// 当剩余chunk的数量小于chunk_compaction_threshold时，开始compaction
+	// 3.初始化 compact 阈值
+	// 当写满chunk的数量大于chunk_compaction_threshold时，开始compaction
 	nv_cache->chunk_compaction_threshold = nv_cache->chunk_count *
 					       dev->conf.nv_cache.chunk_compaction_threshold / 100;
+
+	// [WZC]static
+	SPDK_NOTICELOG("[WZC]nvcache_tt_chunks: %lu, blocks_per_chunk: %lu, tail_blocks: %lu\n", 
+		nv_cache->chunk_count, nv_cache->chunk_blocks, nv_cache->tail_md_chunk_blocks);
+	SPDK_NOTICELOG("[WZC]conf_thres: %u%%, compact_thres_chunks: %lu\n", 
+		dev->conf.nv_cache.chunk_compaction_threshold, nv_cache->chunk_compaction_threshold);
+	nv_cache->compaction_read_blocks = 0;
+
+	// 4.初始化compactor_list
 	TAILQ_INIT(&nv_cache->compactor_list);
+	// 初始化compactor
 	for (i = 0; i < FTL_NV_CACHE_NUM_COMPACTORS; i++) {
 		compactor = compactor_alloc(dev);
 
@@ -168,6 +182,7 @@ ftl_nv_cache_init(struct spdk_ftl_dev *dev)
 		TAILQ_INSERT_TAIL(&nv_cache->compactor_list, compactor, entry);
 	}
 
+	// 5.初始化 mempool
 #define FTL_MAX_OPEN_CHUNKS 2
 	nv_cache->p2l_pool = ftl_mempool_create(FTL_MAX_OPEN_CHUNKS,
 						nv_cache_p2l_map_pool_elem_size(nv_cache),
@@ -198,6 +213,7 @@ ftl_nv_cache_init(struct spdk_ftl_dev *dev)
 		return -ENOMEM;
 	}
 
+	// throttle
 	nv_cache->throttle.interval_tsc = FTL_NV_CACHE_THROTTLE_INTERVAL_MS *
 					  (spdk_get_ticks_hz() / 1000);
 	nv_cache->chunk_free_target = spdk_divide_round_up(nv_cache->chunk_count *
@@ -265,6 +281,7 @@ ftl_nv_cache_get_wr_buffer(struct ftl_nv_cache *nv_cache, struct ftl_io *io)
 			chunk = NULL;
 		}
 
+		// 1.如果 chunk_current 为空，从open_list中取出一个chunk
 		if (!chunk) {
 			chunk = TAILQ_FIRST(&nv_cache->chunk_open_list);
 			if (chunk && chunk->md->state == FTL_CHUNK_STATE_OPEN) {
@@ -275,7 +292,7 @@ ftl_nv_cache_get_wr_buffer(struct ftl_nv_cache *nv_cache, struct ftl_io *io)
 			}
 		}
 
-		// 获取当前chunk可用的空间
+		// 2.获取当前chunk可用的空间
 		free_space = chunk_get_free_space(nv_cache, chunk);
 
 		if (free_space >= num_blocks) {
@@ -304,12 +321,12 @@ ftl_nv_cache_get_wr_buffer(struct ftl_nv_cache *nv_cache, struct ftl_io *io)
 		chunk->md->blocks_written += free_space;
 		chunk->md->write_pointer += free_space;
 
+		// 3.判断chunk 是否写满，写满则关闭
 		if (chunk->md->blocks_written == chunk_tail_md_offset(nv_cache)) {
 			// chunk的写满了，需要关闭
-			// 此时将chunk的p2l metadata数据写入到 cache-ssd 中
-			// size = tail_md_chunk_blocks
+			// 此时将chunk的p2l metadata数据写入到 cache-ssd 中，size = tail_md_chunk_blocks
+			// 在 chunk_close_cb 将chunk放到chunk_full_list中，将状态设置为CLOSED
 			ftl_chunk_close(chunk);
-			// 不过没看到其将close chunk放到chunk_full_list
 		}
 	} while (1);
 
@@ -523,10 +540,13 @@ compaction_stats_update(struct ftl_nv_cache_chunk *chunk)
 	}
 
 	*ptr = (double)chunk->md->blocks_compacted * FTL_BLOCK_SIZE / chunk->compaction_length_tsc;
-	chunk->compaction_length_tsc = 0;
 
 	compaction_bw->sum += *ptr;
 	nv_cache->compaction_sma = compaction_bw->sum / compaction_bw->count;
+	SPDK_NOTICELOG("[WZC]tt_comp_blks: %lu, chunk->seq_id: %lu, comp_blocks: %u, comp_long: %lu s, comp_bw:%.2f\n",
+			  nv_cache->compaction_read_blocks, chunk->md->seq_id, chunk->md->blocks_compacted, chunk->compaction_length_tsc, nv_cache->compaction_sma);
+	chunk->compaction_length_tsc = 0;
+
 }
 
 static void
@@ -535,13 +555,18 @@ chunk_compaction_advance(struct ftl_nv_cache_chunk *chunk, uint64_t num_blocks)
 	struct ftl_nv_cache *nv_cache = chunk->nv_cache;
 	uint64_t tsc = spdk_thread_get_last_tsc(spdk_get_thread());
 
-	// 1.统计compaction的持续时间
+	// 1.增加compaction的持续时间
+	//   最后算得compaction的时间包括各种函数调用，回调，数据读取的时间
 	chunk->compaction_length_tsc += tsc - chunk->compaction_start_tsc;
 	chunk->compaction_start_tsc = tsc;
 
+	// 1.1 这里的blocks_compacted并不是真正需要读取的block数，而是compact过程中已经处理的block数？
+	//     blocks_compacted = (valid + invalid) != valid
+	//     用于做下面的阈值退出判断？
 	chunk->md->blocks_compacted += num_blocks;
 
-	// 2.判断chunk里用户写的block是否等于compacted的block
+
+	// 2.判断chunk里用户写的block是否等于compacted处理block
 	if (!is_chunk_compacted(chunk)) {
 		return;
 	}
@@ -834,16 +859,18 @@ compaction_process(struct ftl_nv_cache_compactor *compactor)
 	assert(to_read > 0);
 
 	// addr = chunk->offset + chunk->md->read_pointer + dev->layout.base.total_blocks
-	// begin (从valid_map中找到对应的bit)
+	// begin (从valid_map中找到第一个有效bit)
 	addr = ftl_addr_from_nvc_offset(dev, chunk->offset + chunk->md->read_pointer);
 	begin = ftl_bitmap_find_first_set(dev->valid_map, addr, addr + to_read);
 	// to_read, begin - addr -> offset 
 	if (begin != UINT64_MAX) {
+		// 不等于0说明有无效数据
 		offset = spdk_min(begin - addr, to_read);
 	} else {
 		offset = to_read;
 	}
 
+	// 3.0 off != 0, 说明有无效数据
 	if (offset) {
 		chunk->md->read_pointer += offset;
 		// 3.1 num_compact = offset
@@ -858,7 +885,7 @@ compaction_process(struct ftl_nv_cache_compactor *compactor)
 		}
 	}
 
-	// end (从valid_map中找到对应的bit)
+	// end (从valid_map中找到第一个无效的bit)
 	// begin -> addr, (end - begin) -> to_read
 	end = ftl_bitmap_find_first_clear(dev->valid_map, begin + 1, begin + to_read);
 	if (end != UINT64_MAX) {
@@ -892,6 +919,8 @@ compaction_process(struct ftl_nv_cache_compactor *compactor)
 
 	/* Move read pointer in the chunk */
 	chunk->md->read_pointer += to_read;
+
+	nv_cache->compaction_read_blocks += to_read;
 }
 
 static void
@@ -964,6 +993,7 @@ compaction_process_finish_read(struct ftl_nv_cache_compactor *compactor)
 	uint64_t tsc = spdk_thread_get_last_tsc(spdk_get_thread());
 
 	// 1.再次更新compaction的持续时间
+	//   到这里增加的时间是数据读取的时间，各种函数回调、调用的时间
 	chunk->compaction_length_tsc += tsc - chunk->compaction_start_tsc;
 	chunk->compaction_start_tsc = tsc;
 
@@ -980,6 +1010,7 @@ compaction_process_finish_read(struct ftl_nv_cache_compactor *compactor)
 	while (wr->iter.idx < num_entries && rd->iter.idx < rd->iter.count) {
 		/* Get metadata */
 		md = rd->entries[rd->iter.idx].io_md;
+		// 无效数据？
 		if (md->nv_cache.lba == FTL_LBA_INVALID || md->nv_cache.seq_id != chunk->md->seq_id) {
 			cache_addr++;
 			rd->iter.idx++;
@@ -1021,7 +1052,7 @@ compaction_process_finish_read(struct ftl_nv_cache_compactor *compactor)
 		/*
 		 * Request contains data to be placed on FTL, compact it
 		 */
-		// 3.将compactor->wr中的数据写入到 base-SSD 的 writer_user 的 ftl_rq 队列中
+		// 3.将compactor->wr请求写入到 base-SSD 的 writer_user 的 ftl_rq 队列中
 		ftl_writer_queue_rq(&dev->writer_user, wr);
 	} else {
 		// 0.继续compact
@@ -1070,6 +1101,7 @@ compactor_alloc(struct spdk_ftl_dev *dev)
 
 	compactor->nv_cache = &dev->nv_cache;
 	compactor->wr->owner.priv = compactor;
+	// 设置compactor->wr的回调函数
 	compactor->wr->owner.cb = compaction_process_ftl_done;
 	compactor->wr->owner.compaction = true;
 
@@ -1226,7 +1258,7 @@ ftl_nv_cache_read(struct ftl_io *io, ftl_addr addr, uint32_t num_blocks,
 	assert(ftl_addr_in_nvc(io->dev, addr));
 
 	rc = ftl_nv_cache_bdev_read_blocks_with_md(io->dev, nv_cache->bdev_desc, nv_cache->cache_ioch,
-			ftl_io_iovec_addr(io), NULL, ftl_addr_to_nvc_offset(io->dev, addr),
+			ftl_io_iovec_addr(io), NULL, ftl_addr_to_nvc_offset(io->dev, addr), // nv_cache 盘的偏移块得用 addr - base'tt blocks
 			num_blocks, cb, cb_arg);
 
 	return rc;
@@ -1353,6 +1385,7 @@ ftl_nv_cache_throttle_update(struct ftl_nv_cache *nv_cache)
 		modifier = FTL_NV_CACHE_THROTTLE_MODIFIER_MAX;
 	}
 
+	// 在这里设置 throttle.blocks_submitted_limit 阈值
 	if (spdk_unlikely(nv_cache->compaction_sma == 0 || nv_cache->compaction_active_count == 0)) {
 		nv_cache->throttle.blocks_submitted_limit = UINT64_MAX;
 	} else {
@@ -1391,6 +1424,8 @@ ftl_nv_cache_process(struct spdk_ftl_dev *dev)
 	// 在chunk_open_cb 里将 chunk 的状态设置为 open
 	if (nv_cache->chunk_open_count < FTL_MAX_OPEN_CHUNKS && spdk_likely(!nv_cache->halt) &&
 	    !TAILQ_EMPTY(&nv_cache->chunk_free_list)) {
+		// 1.1 从chunk_free_list中获取一个chunk, 放入chunk_open_list中, 
+		//     然后将chunk的状态设置为open
 		struct ftl_nv_cache_chunk *chunk = TAILQ_FIRST(&nv_cache->chunk_free_list);
 		TAILQ_REMOVE(&nv_cache->chunk_free_list, chunk, entry);
 		TAILQ_INSERT_TAIL(&nv_cache->chunk_open_list, chunk, entry);
@@ -1429,7 +1464,7 @@ ftl_nv_cache_process(struct spdk_ftl_dev *dev)
 		}
 	}
 
-	// 5.更新throttle统计信息
+	// 5.更新throttle统计信息，重置blocks_submitted
 	ftl_nv_cache_process_throttle(nv_cache);
 }
 
@@ -1848,11 +1883,13 @@ chunk_close_cb(int status, void *ctx)
 		chunk->nv_cache->chunk_open_count--;
 
 		/* Chunk full move it on full list */
+		// 将chunk从open_list中移除，放入full_list中
 		TAILQ_INSERT_TAIL(&chunk->nv_cache->chunk_full_list, chunk, entry);
 		chunk->nv_cache->chunk_full_count++;
 
 		chunk->nv_cache->last_seq_id = chunk->md->close_seq_id;
-
+		
+		// 2.将 chunk 状态设置为 closed
 		chunk->md->state = FTL_CHUNK_STATE_CLOSED;
 	} else {
 #ifdef SPDK_FTL_RETRY_ON_ERROR
@@ -1903,6 +1940,7 @@ ftl_chunk_close(struct ftl_nv_cache_chunk *chunk)
 
 	chunk->md->close_seq_id = ftl_get_next_seq_id(dev);
 	ftl_basic_rq_init(dev, brq, metadata, chunk->nv_cache->tail_md_chunk_blocks);
+	// 将 chunk 的状态设置为 closed 移入 full_list
 	ftl_basic_rq_set_owner(brq, chunk_map_write_cb, chunk);
 
 	assert(chunk->md->write_pointer == chunk_tail_md_offset(chunk->nv_cache));
@@ -1910,8 +1948,8 @@ ftl_chunk_close(struct ftl_nv_cache_chunk *chunk)
 	// brq->num_blocks = tail_md_chunk_blocks
 	brq->io.addr = chunk->offset + chunk->md->write_pointer;
 
-	SPDK_NOTICELOG("[WZC]chunk->offset = %lu, chunk->md->write_pointer = %lu, brq->io.addr = %lu\n", chunk->offset, chunk->md->write_pointer, brq->io.addr);
-	SPDK_NOTICELOG("[WZC]chunk->compaction_duration = %lu\n", chunk->compaction_length_tsc);
+	// SPDK_NOTICELOG("[WZC]chunk->offset = %lu, chunk->md->write_pointer = %lu, brq->io.addr = %lu\n", chunk->offset, chunk->md->write_pointer, brq->io.addr);
+	// SPDK_NOTICELOG("[WZC]chunk->compaction_duration = %lu\n", chunk->compaction_length_tsc);
 
 	ftl_chunk_basic_rq_write(chunk, brq);
 }

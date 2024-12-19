@@ -33,19 +33,20 @@ ftl_io_dec_req(struct ftl_io *io)
 struct iovec *
 ftl_io_iovec(struct ftl_io *io)
 {
-	return &io->iov[0];
+	return &io->iov[0];  // 获得第一个 iov 的地址, 也即总的iov的地址
 }
 
 uint64_t
 ftl_io_get_lba(const struct ftl_io *io, size_t offset)
 {
 	assert(offset < io->num_blocks);
-	return io->lba + offset;
+	return io->lba + offset;  // io最初的lba位置加上偏移
 }
 
 uint64_t
 ftl_io_current_lba(const struct ftl_io *io)
 {
+	// 获取这个 io 当前处理的位置的 lba
 	return ftl_io_get_lba(io, io->pos);
 }
 
@@ -55,12 +56,15 @@ ftl_io_advance(struct ftl_io *io, size_t num_blocks)
 	struct iovec *iov = ftl_io_iovec(io);
 	size_t iov_blocks, block_left = num_blocks;
 
+	// 1.增加 io->pos 处理块数
 	io->pos += num_blocks;
 
+	// 2.如果iov只有一个iovec 则直接返回
 	if (io->iov_cnt == 0) {
 		return;
 	}
 
+	// 3.根据剩余未处理的num_blocks数处理iov的情况 iovec = iov[0] -> iov[1]
 	while (block_left > 0) {
 		assert(io->iov_pos < io->iov_cnt);
 		iov_blocks = iov[io->iov_pos].iov_len / FTL_BLOCK_SIZE;
@@ -104,7 +108,7 @@ ftl_io_iovec_addr(struct ftl_io *io)
 }
 
 size_t
-ftl_io_iovec_len_left(struct ftl_io *io)
+ftl_io_iovec_len_left(struct ftl_io *io)  // 这个 iovec 还剩下多少个 block 未处理
 {
 	if (io->iov_pos < io->iov_cnt) {
 		struct iovec *iov = ftl_io_iovec(io);
@@ -175,7 +179,7 @@ ftl_io_init(struct spdk_io_channel *_ioch, struct ftl_io *io, uint64_t lba, size
 	io->type = type;
 	io->dev = dev;
 	io->lba = FTL_LBA_INVALID;
-	io->addr = FTL_ADDR_INVALID;
+	io->addr = FTL_ADDR_INVALID;  // for write[]
 	io->cb_ctx = cb_ctx;
 	io->lba = lba;
 	io->user_fn = cb_fn;
