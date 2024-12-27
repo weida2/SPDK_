@@ -202,6 +202,7 @@ struct ftl_rq {
 	struct iovec *io_vec;
 
 	/* Payload for IO */
+	// 存储数据的地方
 	void *io_payload;
 
 	/* Request result status */

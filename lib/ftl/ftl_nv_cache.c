@@ -152,6 +152,9 @@ ftl_nv_cache_init(struct spdk_ftl_dev *dev)
 		offset += nv_cache->chunk_blocks;
 		// 初始化时所有的chunk都是free状态，都插入到chunk_free_list中
 		TAILQ_INSERT_TAIL(&nv_cache->chunk_free_list, chunk, entry);
+
+		// static
+		chunk->compact_valid_blocks = 0;
 	}
 	assert(offset <= nvc_data_offset(nv_cache) + nvc_data_blocks(nv_cache));
 
@@ -162,11 +165,12 @@ ftl_nv_cache_init(struct spdk_ftl_dev *dev)
 					       dev->conf.nv_cache.chunk_compaction_threshold / 100;
 
 	// [WZC]static
-	SPDK_NOTICELOG("[WZC]nvcache_tt_chunks: %lu, blocks_per_chunk: %lu, tail_blocks: %lu\n", 
+	SPDK_NOTICELOG("[WZC_INIT]nvcache_tt_chunks: %lu, blocks_per_chunk: %lu, tail_blocks: %lu\n", 
 		nv_cache->chunk_count, nv_cache->chunk_blocks, nv_cache->tail_md_chunk_blocks);
-	SPDK_NOTICELOG("[WZC]conf_thres: %u%%, compact_thres_chunks: %lu\n", 
+	SPDK_NOTICELOG("[WZC_INIT]conf_thres: %u%%, compact_thres_chunks: %lu\n", 
 		dev->conf.nv_cache.chunk_compaction_threshold, nv_cache->chunk_compaction_threshold);
 	nv_cache->compaction_read_blocks = 0;
+	nv_cache->compaction_start_time = 0;
 
 	// 4.初始化compactor_list
 	TAILQ_INIT(&nv_cache->compactor_list);
@@ -213,7 +217,7 @@ ftl_nv_cache_init(struct spdk_ftl_dev *dev)
 		return -ENOMEM;
 	}
 
-	// throttle
+	// 1.初始化 throttle.interval_tsc, chunk_free_target
 	nv_cache->throttle.interval_tsc = FTL_NV_CACHE_THROTTLE_INTERVAL_MS *
 					  (spdk_get_ticks_hz() / 1000);
 	nv_cache->chunk_free_target = spdk_divide_round_up(nv_cache->chunk_count *
@@ -543,9 +547,11 @@ compaction_stats_update(struct ftl_nv_cache_chunk *chunk)
 
 	compaction_bw->sum += *ptr;
 	nv_cache->compaction_sma = compaction_bw->sum / compaction_bw->count;
-	SPDK_NOTICELOG("[WZC]tt_comp_blks: %lu, chunk->seq_id: %lu, comp_blocks: %u, comp_long: %lu s, comp_bw:%.2f\n",
-			  nv_cache->compaction_read_blocks, chunk->md->seq_id, chunk->md->blocks_compacted, chunk->compaction_length_tsc, nv_cache->compaction_sma);
+	SPDK_NOTICELOG("[WZC]tt_comp_blks: %lu, chunk->seq_id: %lu, comp_blks: %u, valid_blks: %lu, comp_long: %lu s, comp_bw:%.2f\n",
+			  nv_cache->compaction_read_blocks, chunk->md->seq_id, chunk->md->blocks_compacted, 
+			  chunk->compact_valid_blocks, chunk->compaction_length_tsc, nv_cache->compaction_sma);
 	chunk->compaction_length_tsc = 0;
+	chunk->compact_valid_blocks = 0;
 
 }
 
@@ -920,6 +926,7 @@ compaction_process(struct ftl_nv_cache_compactor *compactor)
 	/* Move read pointer in the chunk */
 	chunk->md->read_pointer += to_read;
 
+	chunk->compact_valid_blocks += to_read;
 	nv_cache->compaction_read_blocks += to_read;
 }
 
@@ -1245,6 +1252,12 @@ ftl_nv_cache_write(struct ftl_io *io)
 
 	dev->nv_cache.throttle.blocks_submitted += io->num_blocks;
 
+	// static
+	if (dev->st == 0) {
+		dev->st = 1;
+		dev->start_write_time = spdk_thread_get_last_tsc(spdk_get_thread()) / spdk_get_ticks_hz();
+		SPDK_NOTICELOG("[WZC_ST]write start, start_write_time: %lus\n", dev->start_write_time);
+	}
 	return true;
 }
 
@@ -1385,13 +1398,27 @@ ftl_nv_cache_throttle_update(struct ftl_nv_cache *nv_cache)
 		modifier = FTL_NV_CACHE_THROTTLE_MODIFIER_MAX;
 	}
 
-	// 在这里设置 throttle.blocks_submitted_limit 阈值
+	// 1.在这里设置 throttle.blocks_submitted_limit 阈值
 	if (spdk_unlikely(nv_cache->compaction_sma == 0 || nv_cache->compaction_active_count == 0)) {
 		nv_cache->throttle.blocks_submitted_limit = UINT64_MAX;
 	} else {
+		// 1.1 根据compaction_sma, throttle.interval_tsc, 
+		//        chunk_free_count, chunk_free_target, chunk_count -> err
+		//        FTL_NV_CACHE_THROTTLE_MODIFIER_KP(20) * err -> modifier
+		//        最后 blocks_submitted_limit = blocks_per_interval * (1.0 + modifier)
+		//        所以块提交数限制是由上面这些因素来决定,其中固定的值有
+		//        	throttle.interval_tsc, chunk_free_target, chunk_count
+		//        动态变化的值有:
+		//          compaction_sma, chunk_free_count -> err -> modifier (其趋势是受chunk_free_cnt影响)
 		double blocks_per_interval = nv_cache->compaction_sma * nv_cache->throttle.interval_tsc /
 					     FTL_BLOCK_SIZE;
 		nv_cache->throttle.blocks_submitted_limit = blocks_per_interval * (1.0 + modifier);
+		
+		// static
+		SPDK_NOTICELOG("[WZC_ST]throttle update, throttle_interval: %lu, ck_free_tar: %lu, ck_free_cnt: %lu\n", 
+						nv_cache->throttle.interval_tsc, nv_cache->chunk_free_target, nv_cache->chunk_free_count);
+		SPDK_NOTICELOG("[WZC_ST]throttle update, err: %.2f, modifier: %.2f, cmp_sma: %lu, blks_per_interval: %lu, blks_s_limits: %lu\n", 
+						err, modifier, nv_cache->compaction_sma, blocks_per_interval, nv_cache->throttle.blocks_submitted_limit);
 	}
 }
 
@@ -1402,6 +1429,7 @@ ftl_nv_cache_process_throttle(struct ftl_nv_cache *nv_cache)
 
 	if (spdk_unlikely(!nv_cache->throttle.start_tsc)) {
 		nv_cache->throttle.start_tsc = tsc;
+		// 1. 更新throttle统计信息的条件是当前时间与上一次更新时间大于throttle
 	} else if (tsc - nv_cache->throttle.start_tsc >= nv_cache->throttle.interval_tsc) {
 		ftl_nv_cache_throttle_update(nv_cache);
 		nv_cache->throttle.start_tsc = tsc;
@@ -1437,6 +1465,11 @@ ftl_nv_cache_process(struct spdk_ftl_dev *dev)
 	// 2.判断是否需要compaction
 	// 如果full_chunk数量大于compaction的阈值，且compactor_list(每个entry包括wr/rd的ftl_rq)不为空
 	if (is_compaction_required(nv_cache) && !TAILQ_EMPTY(&nv_cache->compactor_list)) {
+		if (dev->st == 1) {
+			dev->st = 2;
+			nv_cache->compaction_start_time = spdk_thread_get_last_tsc(spdk_get_thread())  / spdk_get_ticks_hz();
+			SPDK_NOTICELOG("[WZC_ST]compaction start, compact_start_time: %lus\n", nv_cache->compaction_start_time);
+		}
 		// 2.1 从 compactor_list 获取 compactor
 		struct ftl_nv_cache_compactor *comp =
 			TAILQ_FIRST(&nv_cache->compactor_list);
@@ -1464,7 +1497,7 @@ ftl_nv_cache_process(struct spdk_ftl_dev *dev)
 		}
 	}
 
-	// 5.更新throttle统计信息，重置blocks_submitted
+	// 5.更新throttle统计信息，重置throttle.blocks_submitted
 	ftl_nv_cache_process_throttle(nv_cache);
 }
 

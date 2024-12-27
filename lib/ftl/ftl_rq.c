@@ -18,7 +18,7 @@ ftl_rq_new(struct spdk_ftl_dev *dev, uint32_t io_md_size)
 	void *io_payload, *io_md = NULL;
 	uint64_t i;
 	size_t size;
-	uint32_t num_blocks = dev->xfer_size;
+	uint32_t num_blocks = dev->xfer_size;  // 16?
 
 	size = sizeof(*rq) + (sizeof(rq->entries[0]) * num_blocks);
 	rq = calloc(1, size);
@@ -29,6 +29,7 @@ ftl_rq_new(struct spdk_ftl_dev *dev, uint32_t io_md_size)
 	rq->num_blocks = num_blocks;
 
 	/* Allocate payload for IO and IO vector */
+	// io_payload 存储实际数据的地方
 	io_payload = rq->io_payload = spdk_zmalloc(FTL_BLOCK_SIZE * num_blocks,
 				      FTL_BLOCK_SIZE, NULL, SPDK_ENV_LCORE_ID_ANY,
 				      SPDK_MALLOC_DMA);

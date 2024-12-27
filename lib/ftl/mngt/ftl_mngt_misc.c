@@ -200,6 +200,7 @@ ftl_mngt_finalize_startup(struct spdk_ftl_dev *dev, struct ftl_mngt_process *mng
 void
 ftl_mngt_start_core_poller(struct spdk_ftl_dev *dev, struct ftl_mngt_process *mngt)
 {
+	// 注册 bdev->poller 线程(这里为ftl_core_poller线程)
 	dev->core_poller = SPDK_POLLER_REGISTER(ftl_core_poller, dev, 0);
 	if (!dev->core_poller) {
 		FTL_ERRLOG(dev, "Unable to register core poller\n");

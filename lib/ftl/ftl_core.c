@@ -672,7 +672,7 @@ ftl_process_io_queue(struct spdk_ftl_dev *dev)
 		ftl_io_pin(io);
 	}
 
-	// 2.如果写提交队列不为空，且nv_cache的block提交数未达到阈值，则取出ftl_io做ftl_nv_cache_write处理.
+	// 2.如果写提交队列不为空，且nv_cache的block提交数未达到阈值，则取出ftl_io做ftl_nv_cache_write处理. (两个条件判断)
 	//   如果ftl_io写失败，则再插入dev写提交队列
 	while (!TAILQ_EMPTY(&dev->wr_sq) && !ftl_nv_cache_throttle(dev)) {
 		io = TAILQ_FIRST(&dev->wr_sq);
@@ -718,10 +718,7 @@ ftl_core_poller(void *ctx)
 		spdk_poller_unregister(&dev->core_poller);
 		return SPDK_POLLER_IDLE;
 	}
-	if (dev->i == 0) {
-		dev->i = 1;
-		SPDK_NOTICELOG("poller start\n");
-	}
+
 	// 1.处理 ioch-sq 中的用户io
 	// 向nv_cache中写数据
 	ftl_process_io_queue(dev);
@@ -750,7 +747,9 @@ ftl_band_get_next_free(struct spdk_ftl_dev *dev)
 
 	if (!TAILQ_EMPTY(&dev->free_bands)) {
 		band = TAILQ_FIRST(&dev->free_bands);
+		// 1.从 free_bands 取出移出
 		TAILQ_REMOVE(&dev->free_bands, band, queue_entry);
+		// 设置band的元数据状态
 		ftl_band_erase(band);
 	}
 

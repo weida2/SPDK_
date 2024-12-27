@@ -86,11 +86,13 @@ move_deinit(struct ftl_reloc_move *mv)
 static int
 move_init(struct ftl_reloc *reloc, struct ftl_reloc_move *mv)
 {
+	// 1.初始化 ftl_reloc_move 状态为 HALT,然后插入对应的队列 move_queue[FTL_RELOC_STATE_HALT] 队列
 	mv->state = FTL_RELOC_STATE_HALT;
 	TAILQ_INSERT_TAIL(&reloc->move_queue[FTL_RELOC_STATE_HALT], mv, qentry);
 
 	mv->reloc = reloc;
 	mv->dev = reloc->dev;
+	// 2.init relock_move->ftl_rq
 	mv->rq = ftl_rq_new(mv->dev, mv->dev->md_size);
 
 	if (!mv->rq) {
@@ -101,6 +103,7 @@ move_init(struct ftl_reloc *reloc, struct ftl_reloc_move *mv)
 	return 0;
 }
 
+// 初始化 reloc
 struct ftl_reloc *
 ftl_reloc_init(struct spdk_ftl_dev *dev)
 {
@@ -117,6 +120,7 @@ ftl_reloc_init(struct spdk_ftl_dev *dev)
 	reloc->halt = true;
 	reloc->max_qdepth = dev->sb->max_reloc_qdepth;
 
+	// move_buffer 是处理的 ftl_reloc_move 的数组暂存缓冲区
 	reloc->move_buffer = calloc(reloc->max_qdepth, sizeof(*reloc->move_buffer));
 	if (!reloc->move_buffer) {
 		FTL_ERRLOG(dev, "Failed to initialize reloc moves pool");
@@ -129,6 +133,10 @@ ftl_reloc_init(struct spdk_ftl_dev *dev)
 		TAILQ_INIT(&reloc->move_queue[i]);
 	}
 
+	// 3.initial move_buffer
+	// 3.1 首先将 move_buffer 里的ftl_reloc_move 初始化,并插入到reloc->move_queue[FTL_RELOC_STATE_HALT]这个队列中
+	// 3.2 然后再 ftl_reloc_resume 里将 move_queue[FTL_RELOC_STATE_HALT]队列中的ftl_reloc_move状态设置为FTL_RELOC_STATE_READ
+	// 3.3 ftl_reloc_resume 会在 ftl_mngt_finalize_startup 里调用
 	for (i = 0; i < reloc->max_qdepth; ++i) {
 		move = &reloc->move_buffer[i];
 
@@ -137,6 +145,7 @@ ftl_reloc_init(struct spdk_ftl_dev *dev)
 		}
 	}
 
+	// 4.init reloc->band_done
 	TAILQ_INIT(&reloc->band_done);
 
 	return reloc;
@@ -182,6 +191,8 @@ ftl_reloc_resume(struct ftl_reloc *reloc)
 	struct ftl_reloc_move *mv, *next;
 	reloc->halt = false;
 
+	// 2.在这里将 move_queue[FTL_RELOC_STATE_HALT]队列中的ftl_reloc_move状态设置为FTL_RELOC_STATE_READ
+	//   同时状态改变了之后会将该ftl_reloc_move 从 move_queue[FTL_RELOC_STATE_HALT]队列中移除,并插入到 move_queue[FTL_RELOC_STATE_READ]队列中
 	TAILQ_FOREACH_SAFE(mv, &reloc->move_queue[FTL_RELOC_STATE_HALT], qentry,
 			   next) {
 		move_set_state(mv, FTL_RELOC_STATE_READ);
@@ -243,6 +254,7 @@ static void
 move_grab_new_band(struct ftl_reloc *reloc)
 {
 	if (!reloc->band_waiting) {
+		// 1.触发gc的条件
 		if (!ftl_needs_reloc(reloc->dev)) {
 			return;
 		}
@@ -253,6 +265,8 @@ move_grab_new_band(struct ftl_reloc *reloc)
 		}
 
 		reloc->band_waiting = true;
+		// 获取一个band for gc
+		// 在回调函数 move_get_band_cb 中设置 reloc->band = band(victim)
 		ftl_band_get_next_gc(reloc->dev, move_get_band_cb, reloc);
 	}
 }
@@ -262,16 +276,19 @@ move_get_band(struct ftl_reloc *reloc)
 {
 	struct ftl_band *band = reloc->band;
 
+	// 1.如果是空的,则获取一个新的band
 	if (!band) {
 		move_grab_new_band(reloc);
 		return NULL;
 	}
 
+	// 2.band 还没有读完
 	if (!ftl_band_filled(band, band->md->iter.offset)) {
 		/* Band still not read, we can continue reading */
 		return band;
 	}
 
+	// 3.读完了,则将 插入 reloc->band_done
 	TAILQ_INSERT_TAIL(&reloc->band_done, band, queue_entry);
 	reloc->band_done_count++;
 	reloc->band = NULL;
@@ -377,6 +394,7 @@ move_read(struct ftl_reloc *reloc, struct ftl_reloc_move *mv, struct ftl_band *b
 	struct ftl_rq *rq = mv->rq;
 	uint64_t blocks = ftl_get_num_blocks_in_band(band->dev);
 	uint64_t pos = band->md->iter.offset;
+	// 1.找到band第一个有效的lba(block)
 	uint64_t begin = ftl_bitmap_find_first_set(band->p2l_map.valid, pos, UINT64_MAX);
 	uint64_t end, band_left, rq_left;
 
@@ -391,6 +409,7 @@ move_read(struct ftl_reloc *reloc, struct ftl_reloc_move *mv, struct ftl_band *b
 		}
 	} else if (UINT64_MAX == begin) {
 		/* No more valid LBAs in the band */
+		// 1.1 全无效
 		band_left = ftl_band_user_blocks_left(band, pos);
 		ftl_band_iter_advance(band, band_left);
 
@@ -413,19 +432,26 @@ move_read(struct ftl_reloc *reloc, struct ftl_reloc_move *mv, struct ftl_band *b
 	assert(rq_left > 0);
 
 	/* Find next clear bit, but no further than max request count */
+	// 2.找到第一个无效的lba(block)
 	end = ftl_bitmap_find_first_clear(band->p2l_map.valid, begin + 1, begin + rq_left);
 	if (end != UINT64_MAX) {
 		rq_left = end - begin;
 	}
 
 	band_left = ftl_band_user_blocks_left(band, band->md->iter.offset);
+	// 2.1 设置读取的block数 = rq->iter.count
+	//     to_read
 	rq->iter.count = spdk_min(rq_left, band_left);
 
+	// 3.真正读取gc band的有效数据
 	ftl_band_rq_read(band, rq);
+	reloc->dev->tt_gc_blks += rq->iter.count;
 
+	// 4.推进 ftl_rq 请求 rq.iter 信息
 	move_advance_rq(rq);
 
 	/* Advance band iterator */
+	// 4.1 更新 band->md 的	iter->oft, iter->addr 信息
 	ftl_band_iter_advance(band, rq->iter.count);
 
 	/* If band is fully written pad rest of request */
@@ -433,6 +459,7 @@ move_read(struct ftl_reloc *reloc, struct ftl_reloc_move *mv, struct ftl_band *b
 		move_rq_pad(rq, band);
 	}
 
+	// 5.读完了设置状态？
 	if (rq->iter.idx == rq->num_blocks) {
 		/*
 		 * All request entries scheduled for reading,
@@ -461,6 +488,7 @@ move_pin_cb(struct spdk_ftl_dev *dev, int status, struct ftl_l2p_pin_ctx *pin_ct
 			return;
 		}
 
+		// 1.设置状态为 write
 		move_set_state(mv, FTL_RELOC_STATE_WRITE);
 	}
 }
@@ -472,11 +500,14 @@ move_pin(struct ftl_reloc_move *mv)
 	struct ftl_rq_entry *entry = rq->entries;
 	uint64_t i;
 
+	// 1.设置状态为 wait
 	move_set_state(mv, FTL_RELOC_STATE_WAIT);
 
 	rq->iter.remaining = rq->iter.count = rq->num_blocks;
 	rq->iter.status = 0;
 
+	// 2.遍历 rq->entries, 为每个entry的lba进行pin操作
+	// 2.1 然后在回调函数 move_pin_cb 中设置状态为 write
 	for (i = 0; i < rq->num_blocks; i++) {
 		if (entry->lba != FTL_LBA_INVALID) {
 			ftl_l2p_pin(rq->dev, entry->lba, 1, move_pin_cb, mv, &entry->l2p_pin_ctx);
@@ -522,6 +553,7 @@ move_write_cb(struct ftl_rq *rq)
 	rq->iter.qd--;
 
 	if (spdk_likely(rq->success)) {
+		// 1.更新 L2P表, 将mv状态设置成 READ
 		move_finish_write(rq);
 		move_set_state(mv, FTL_RELOC_STATE_READ);
 	} else {
@@ -539,9 +571,11 @@ move_write(struct ftl_reloc *reloc, struct ftl_reloc_move *mv)
 	assert(rq->iter.idx == rq->num_blocks);
 
 	/* Request contains data to be placed on a new location, submit it */
+	// 将 rq 请求插入到 writer_gc_ftl_rq_queue 队列中
 	ftl_writer_queue_rq(&dev->writer_gc, rq);
 	rq->iter.qd++;
 
+	// 然后设置状态成 wait
 	move_set_state(mv, FTL_RELOC_STATE_WAIT);
 }
 
@@ -662,8 +696,10 @@ ftl_reloc(struct ftl_reloc *reloc)
 			continue;
 		}
 
+		// 1.处理 reloc->move_queue[5] 的每个move_queue队列
 		move_run(reloc, TAILQ_FIRST(&reloc->move_queue[i]));
 	}
 
+	// 2.将 reloc->band_done 里需要读取的band取出，然后设置成free状态
 	move_release_bands(reloc);
 }

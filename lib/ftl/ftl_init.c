@@ -128,7 +128,10 @@ allocate_dev(const struct spdk_ftl_conf *conf, int *error)
 	ftl_writer_init(dev, &dev->writer_user, SPDK_FTL_LIMIT_HIGH, FTL_BAND_TYPE_COMPACTION);
 	ftl_writer_init(dev, &dev->writer_gc, SPDK_FTL_LIMIT_CRIT, FTL_BAND_TYPE_GC);
 
-	dev->i = 0;
+	dev->start_write_time = 0;
+	dev->st = 0;
+	dev->tt_gc_blks = 0;
+	
 	return dev;
 error:
 	free_dev(dev);

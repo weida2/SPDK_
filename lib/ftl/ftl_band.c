@@ -83,8 +83,10 @@ _ftl_band_set_preparing(struct ftl_band *band)
 	struct spdk_ftl_dev *dev = band->dev;
 
 	/* Remove band from free list */
+	// 从 free band 移除, 又继续移除了一遍？
 	TAILQ_REMOVE(&dev->free_bands, band, queue_entry);
 
+	// 增加这个band的写入次数
 	band->md->wr_cnt++;
 
 	assert(dev->num_free > 0);
@@ -408,6 +410,7 @@ ftl_band_write_prep(struct ftl_band *band)
 {
 	struct spdk_ftl_dev *dev = band->dev;
 
+	// 初始化 band's p2l
 	if (ftl_band_alloc_p2l_map(band)) {
 		return -1;
 	}
@@ -447,6 +450,7 @@ dump_bands_under_relocation(struct spdk_ftl_dev *dev)
 	for (; i < end; i++) {
 		struct ftl_band *band = &dev->bands[i];
 
+		// 打印 gc_band 的信息
 		FTL_DEBUGLOG(dev, "Band, id %u, phys_is %u, wr cnt = %u, invalidity = %u%%\n",
 			     band->id, band->phys_id, (uint32_t)band->md->wr_cnt,
 			     (uint32_t)(_band_invalidity(band) * 100));
@@ -577,6 +581,7 @@ ftl_band_search_next_to_reloc(struct spdk_ftl_dev *dev)
 	uint64_t i, band_count;
 	uint64_t phys_count;
 
+	// 1.根据superblock gc_info 获取优先级最高的band
 	band = gc_high_priority_band(dev);
 	if (spdk_unlikely(NULL != band)) {
 		return band;
@@ -585,6 +590,7 @@ ftl_band_search_next_to_reloc(struct spdk_ftl_dev *dev)
 	phys_count = dev->num_logical_bands_in_physical;
 	band_count = ftl_get_num_bands(dev);
 
+	// 2.否则根据 superblock gc_info 获取当前gc的band_id
 	for (; dev->sb_shm->gc_info.current_band_id < band_count;) {
 		band = &dev->bands[dev->sb_shm->gc_info.current_band_id];
 		if (band->phys_id != dev->sb_shm->gc_info.band_phys_id) {
@@ -600,14 +606,17 @@ ftl_band_search_next_to_reloc(struct spdk_ftl_dev *dev)
 		return band;
 	}
 
+	// 3.否则从头遍历所有band，根据 有效数据比例，磨损次数 找到最合适的band
 	for (i = 0; i < band_count; i += phys_count) {
 		band = &dev->bands[i];
 
 		/* Calculate entire band physical group invalidity */
+		// 3.1 获取band的物理信息，包括有效数据比例，磨损次数
 		get_band_phys_info(dev, band->phys_id, &invalidity, &wr_cnt);
 
 		if (invalidity != 0.0L) {
 			if (phys_id == FTL_BAND_PHYS_ID_INVALID ||
+			//  先根据有效数据比例判断，然后根据磨损次数判断
 			    band_cmp(invalidity, wr_cnt, max_invalidity, max_wr_cnt,
 				     band->phys_id, phys_id)) {
 				max_invalidity = invalidity;
@@ -617,15 +626,19 @@ ftl_band_search_next_to_reloc(struct spdk_ftl_dev *dev)
 		}
 	}
 
+	// 3.2 根据上面条件选取band' phys_id
 	if (FTL_BAND_PHYS_ID_INVALID != phys_id) {
 		FTL_DEBUGLOG(dev, "Band physical id %"PRIu64" to GC\n", phys_id);
 		dev->sb_shm->gc_info.is_valid = 0;
 		dev->sb_shm->gc_info.current_band_id = phys_id * phys_count;
 		dev->sb_shm->gc_info.band_phys_id = phys_id;
 		dev->sb_shm->gc_info.is_valid = 1;
+		// 1).打印 debug 选取band的信息
 		dump_bands_under_relocation(dev);
+		// 2).进入下一次迭代就会选择这个band
 		return ftl_band_search_next_to_reloc(dev);
 	} else {
+		// 否则reset sb->gc_info
 		ftl_band_reset_gc_iter(dev);
 	}
 

@@ -64,7 +64,7 @@ ftl_io_advance(struct ftl_io *io, size_t num_blocks)
 		return;
 	}
 
-	// 3.根据剩余未处理的num_blocks数处理iov的情况 iovec = iov[0] -> iov[1]
+	// 3.根据剩余未处理的num_blocks数处理iov的情况 io->iov_pos++ ->  iovec = iov[0] -> iov[1]
 	while (block_left > 0) {
 		assert(io->iov_pos < io->iov_cnt);
 		iov_blocks = iov[io->iov_pos].iov_len / FTL_BLOCK_SIZE;

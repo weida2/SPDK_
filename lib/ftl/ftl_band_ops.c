@@ -20,8 +20,10 @@ write_rq_end(struct spdk_bdev_io *bdev_io, bool success, void *arg)
 	ftl_stats_bdev_io_completed(dev, rq->owner.compaction ? FTL_STATS_TYPE_CMP : FTL_STATS_TYPE_GC,
 				    bdev_io);
 
+	// 1.设置 rq->success 为 success
 	rq->success = success;
 
+	// 2.更新 p2l_map
 	ftl_p2l_ckpt_issue(rq);
 
 	spdk_bdev_free_io(bdev_io);
@@ -39,7 +41,7 @@ ftl_band_rq_bdev_write(void *_rq)
 	// bdev open API
 	rc = spdk_bdev_writev_blocks(dev->base_bdev_desc, dev->base_ioch,
 				     rq->io_vec, rq->io_vec_size,
-				     rq->io.addr, rq->num_blocks,
+				     rq->io.addr, rq->num_blocks,  // 往 rq->io
 				     write_rq_end, rq);  // write_rq_end 为回调函数
 
 	if (spdk_unlikely(rc)) {
@@ -62,13 +64,18 @@ ftl_band_rq_write(struct ftl_band *band, struct ftl_rq *rq)
 
 	rq->success = false;
 	rq->io.band = band;
+	// 0.io.addr = band->md->iter.addr 设置写入位置
 	rq->io.addr = band->md->iter.addr;
 
+	// 1.向处理rq请求向base-ssd写数据
 	ftl_band_rq_bdev_write(rq);
 
 	band->queue_depth++;
 	dev->stats.io_activity_total += rq->num_blocks;
+	
 
+	// 2.更新 band->md->iter.addr
+	//   更新 band 的写指针位置
 	ftl_band_iter_advance(band, rq->num_blocks);
 	if (ftl_band_filled(band, band->md->iter.offset)) {
 		ftl_band_set_state(band, FTL_BAND_STATE_FULL);
@@ -129,6 +136,7 @@ void
 ftl_band_rq_read(struct ftl_band *band, struct ftl_rq *rq)
 {
 	struct spdk_ftl_dev *dev = band->dev;
+	// base rq -> ftl_rq 条目
 	struct ftl_rq_entry *entry = &rq->entries[rq->iter.idx];
 
 	assert(rq->iter.idx + rq->iter.count <= rq->num_blocks);
@@ -136,6 +144,8 @@ ftl_band_rq_read(struct ftl_band *band, struct ftl_rq *rq)
 	rq->success = false;
 	rq->io.band = band;
 	rq->io.addr = band->md->iter.addr;
+	// 设置读取base的lba位置
+	// 读取后放到 entry->io_payload 中
 	entry->io.band = band;
 	entry->bdev_io.offset_blocks = rq->io.addr;
 	entry->bdev_io.num_blocks = rq->iter.count;
@@ -196,12 +206,15 @@ ftl_band_basic_rq_write(struct ftl_band *band, struct ftl_basic_rq *brq)
 	brq->io.band = band;
 	brq->success = false;
 
+	// 1. brq 实际写
 	ftl_band_brq_bdev_write(brq);
 
 	dev->stats.io_activity_total += brq->num_blocks;
 	band->queue_depth++;
+	// 2. 更新写指针
 	ftl_band_iter_advance(band, brq->num_blocks);
 	if (ftl_band_filled(band, band->md->iter.offset)) {
+		// 2.1 如果 band 写满了就设置 band 的状态为 FULL
 		ftl_band_set_state(band, FTL_BAND_STATE_FULL);
 		band->owner.state_change_fn(band);
 	}
@@ -285,10 +298,12 @@ ftl_band_open(struct ftl_band *band, enum ftl_band_type type)
 	struct ftl_layout_region *region = &dev->layout.region[FTL_LAYOUT_REGION_TYPE_BAND_MD];
 	struct ftl_p2l_map *p2l_map = &band->p2l_map;
 
+	// 1.设置该band的类型
 	ftl_band_set_type(band, type);
-	// band要打开前从prep状态转换为opening状态
+	// 2.band的md从prep状态设置成opening状态
 	ftl_band_set_state(band, FTL_BAND_STATE_OPENING);
 
+	// 2.1 在p2l_map将band_dma_md 设置成 OPEN 状态
 	memcpy(p2l_map->band_dma_md, band->md, region->entry_size * FTL_BLOCK_SIZE);
 	p2l_map->band_dma_md->state = FTL_BAND_STATE_OPEN;
 	p2l_map->band_dma_md->p2l_map_checksum = 0;
@@ -302,7 +317,8 @@ ftl_band_open(struct ftl_band *band, enum ftl_band_type type)
 		ftl_abort();
 	}
 
-	// 将band前面的数据元数据写入后调用band_open_cb 将band状态设置为open
+	// 3.将band前面的数据元数据持久化后调用band_open_cb 将band_md状态设置为open
+	//   所以在这个函数里 band_md 的状态从 OPENING -> OPEN
 	ftl_md_persist_entry(md, band->id, p2l_map->band_dma_md, NULL,
 			     band_open_cb, band, &band->md_persist_entry_ctx);
 }
@@ -366,9 +382,12 @@ ftl_band_close(struct ftl_band *band)
 	/* Write P2L map first, after completion, set the state to close on nvcache, then internally */
 	band->md->close_seq_id = ftl_get_next_seq_id(dev);
 	ftl_band_set_state(band, FTL_BAND_STATE_CLOSING);
+	// 1.brq_init 
 	ftl_basic_rq_init(dev, &band->metadata_rq, metadata, num_blocks);
-	ftl_basic_rq_set_owner(&band->metadata_rq, band_map_write_cb, band);
+	ftl_basic_rq_set_owner(&band->metadata_rq, band_map_write_cb, band);  // band_map_write_cb 为回调函数
+																		  // 将 band 状态设置为 closed
 
+	// 2.brq_write
 	ftl_band_basic_rq_write(band, &band->metadata_rq);
 }
 
@@ -388,6 +407,10 @@ band_free_cb(int status, void *ctx)
 
 	ftl_band_release_p2l_map(band);
 	FTL_DEBUGLOG(band->dev, "Band is going to free state. Band id: %u\n", band->id);
+
+	// static = 0
+	SPDK_NOTICELOG("[WZC_GC]Band[%u] free, gc_thres: %lu, tt_bands: %lu,  tt_gc_blks: %lu\n",
+						 band->id, band->dev->conf.limits[SPDK_FTL_LIMIT_START], band->dev->num_bands, band->dev->tt_gc_blks);
 	ftl_band_set_state(band, FTL_BAND_STATE_FREE);
 	assert(0 == band->p2l_map.ref_cnt);
 }
@@ -406,7 +429,8 @@ ftl_band_free(struct ftl_band *band)
 	p2l_map->band_dma_md->p2l_map_checksum = 0;
 
 	ftl_md_persist_entry(md, band->id, p2l_map->band_dma_md, NULL,
-			     band_free_cb, band, &band->md_persist_entry_ctx);
+			     band_free_cb, band, &band->md_persist_entry_ctx);  // band_free_cb 为回调函数
+				 													// 将 band 状态设置为 free
 
 	/* TODO: The whole band erase code should probably be done here instead */
 }
@@ -523,6 +547,7 @@ ftl_band_read_tail_brq_md(struct ftl_band *band, ftl_band_md_cb cb, void *cntx)
 void
 ftl_band_get_next_gc(struct spdk_ftl_dev *dev, ftl_band_ops_cb cb, void *cntx)
 {
+	// 1.真正根据gc策略选取band
 	struct ftl_band *band = ftl_band_search_next_to_reloc(dev);
 
 	/* if disk is very small, GC start very early that no band is ready for it */
@@ -538,5 +563,6 @@ ftl_band_get_next_gc(struct spdk_ftl_dev *dev, ftl_band_ops_cb cb, void *cntx)
 	band->owner.ops_fn = cb;
 	band->owner.priv = cntx;
 
+	// 2.生成读元数据请求brq,读取该band的元数据
 	read_md(band);
 }

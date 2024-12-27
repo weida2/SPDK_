@@ -244,7 +244,10 @@ ftl_band_iter_init(struct ftl_band *band)
 static inline void
 ftl_band_iter_advance(struct ftl_band *band, uint64_t num_blocks)
 {
+	// 1.oft 根据 num_blocks 直接更新
 	band->md->iter.offset += num_blocks;
+	// 2.addr 根据 base-ssd 的unit_size(eg.64k) 来更新该band里下一个能写入的位置
+	//   设置num_blocks、unit_size、start_addr、offset、addr 这些转换对齐
 	band->md->iter.addr = ftl_band_next_xfer_addr(band, band->md->iter.addr, num_blocks);
 	assert(band->md->iter.addr != FTL_ADDR_INVALID);
 }

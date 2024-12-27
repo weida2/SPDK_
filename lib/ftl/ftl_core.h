@@ -191,7 +191,11 @@ struct spdk_ftl_dev {
 		TAILQ_HEAD(, ftl_p2l_ckpt)	inuse;
 	} p2l_ckpt;
 
-	int i;
+	// static
+	uint64_t start_write_time;
+	int st;
+
+	uint64_t tt_gc_blks;
 };
 
 void ftl_apply_limits(struct spdk_ftl_dev *dev);

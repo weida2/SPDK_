@@ -120,6 +120,9 @@ struct ftl_nv_cache_chunk {
 	/* Compaction duration */
 	uint64_t compaction_length_tsc;
 
+	// static
+	uint64_t compact_valid_blocks;
+
 	/* For writing metadata */
 	struct ftl_md_io_entry_ctx md_persist_entry_ctx;
 };
@@ -210,6 +213,7 @@ struct ftl_nv_cache {
 	double compaction_sma;
 	
 	uint64_t compaction_read_blocks;
+	uint64_t compaction_start_time;
 
 #define FTL_NV_CACHE_COMPACTION_SMA_N (FTL_NV_CACHE_NUM_COMPACTORS * 2)
 	/* Circular buffer holding values for calculating compaction SMA */
