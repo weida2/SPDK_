@@ -117,6 +117,10 @@ struct ftl_nv_cache_chunk {
 	/* Compaction start time */
 	uint64_t compaction_start_tsc;
 
+	uint64_t comp_st_time;
+	uint64_t comp_finish_read_time;
+	uint64_t comp_finish_comp_time;
+
 	/* Compaction duration */
 	uint64_t compaction_length_tsc;
 
@@ -208,12 +212,17 @@ struct ftl_nv_cache {
 
 	uint64_t chunk_free_target;
 	
-	// compaction 如下为统计信息	
+	// compaction 如下为统计信息
 	/* Simple moving average of recent compaction velocity values */
 	double compaction_sma;
 	
-	uint64_t compaction_read_blocks;
+	uint64_t compaction_read_blocks; // tt_cmp_blks
 	uint64_t compaction_start_time;
+	uint64_t trigger_throttle_cnt;  // tt_throttle_cnt
+	uint64_t interval_throttle_cnt;  // interval
+	uint64_t CPU_HZ;
+	uint64_t throttle_cpu_cnt;
+	
 
 #define FTL_NV_CACHE_COMPACTION_SMA_N (FTL_NV_CACHE_NUM_COMPACTORS * 2)
 	/* Circular buffer holding values for calculating compaction SMA */

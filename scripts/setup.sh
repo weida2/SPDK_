@@ -124,48 +124,55 @@ function pci_dev_echo() {
 }
 
 function linux_bind_driver() {
-	bdf="$1"
-	driver_name="$2"
-	old_driver_name=${drivers_d["$bdf"]:-no driver}
-	ven_dev_id="${pci_ids_vendor["$bdf"]#0x} ${pci_ids_device["$bdf"]#0x}"
+    bdf="$1"
+    driver_name="$2"
+    
+    # Skip unbinding for device 0000:e6:00.0
+    if [[ "$bdf" == "0000:e6:00.0" ]]; then
+        pci_dev_echo "$bdf" "Skipping unbind for device $bdf"
+        return 0
+    fi
 
-	if [[ $driver_name == "$old_driver_name" ]]; then
-		pci_dev_echo "$bdf" "Already using the $old_driver_name driver"
-		return 0
-	fi
+    old_driver_name=${drivers_d["$bdf"]:-no driver}
+    ven_dev_id="${pci_ids_vendor["$bdf"]#0x} ${pci_ids_device["$bdf"]#0x}"
 
-	if [[ $old_driver_name != "no driver" ]]; then
-		echo "$ven_dev_id" > "/sys/bus/pci/devices/$bdf/driver/remove_id" 2> /dev/null || true
-		echo "$bdf" > "/sys/bus/pci/devices/$bdf/driver/unbind"
-	fi
+    if [[ $driver_name == "$old_driver_name" ]]; then
+        pci_dev_echo "$bdf" "Already using the $old_driver_name driver"
+        return 0
+    fi
 
-	pci_dev_echo "$bdf" "$old_driver_name -> $driver_name"
+    if [[ $old_driver_name != "no driver" ]]; then
+        echo "$ven_dev_id" > "/sys/bus/pci/devices/$bdf/driver/remove_id" 2> /dev/null || true
+        echo "$bdf" > "/sys/bus/pci/devices/$bdf/driver/unbind"
+    fi
 
-	if [[ $driver_name == "none" ]]; then
-		return 0
-	fi
+    pci_dev_echo "$bdf" "$old_driver_name -> $driver_name"
 
-	echo "$ven_dev_id" > "/sys/bus/pci/drivers/$driver_name/new_id" 2> /dev/null || true
-	echo "$bdf" > "/sys/bus/pci/drivers/$driver_name/bind" 2> /dev/null || true
+    if [[ $driver_name == "none" ]]; then
+        return 0
+    fi
 
-	if [[ $driver_name == uio_pci_generic ]] && ! check_for_driver igb_uio; then
-		# Check if the uio_pci_generic driver is broken as it might be in
-		# some 4.18.x kernels (see centos8 for instance) - if our device
-		# didn't get a proper uio entry, fallback to igb_uio
-		if [[ ! -e /sys/bus/pci/devices/$bdf/uio ]]; then
-			pci_dev_echo "$bdf" "uio_pci_generic potentially broken, moving to igb_uio"
-			drivers_d["$bdf"]="no driver"
-			# This call will override $driver_name for remaining devices as well
-			linux_bind_driver "$bdf" igb_uio
-		fi
-	fi
+    echo "$ven_dev_id" > "/sys/bus/pci/drivers/$driver_name/new_id" 2> /dev/null || true
+    echo "$bdf" > "/sys/bus/pci/drivers/$driver_name/bind" 2> /dev/null || true
 
-	iommu_group=$(basename $(readlink -f /sys/bus/pci/devices/$bdf/iommu_group))
-	if [ -e "/dev/vfio/$iommu_group" ]; then
-		if [ -n "$TARGET_USER" ]; then
-			chown "$TARGET_USER" "/dev/vfio/$iommu_group"
-		fi
-	fi
+    if [[ $driver_name == uio_pci_generic ]] && ! check_for_driver igb_uio; then
+        # Check if the uio_pci_generic driver is broken as it might be in
+        # some 4.18.x kernels (see centos8 for instance) - if our device
+        # didn't get a proper uio entry, fallback to igb_uio
+        if [[ ! -e /sys/bus/pci/devices/$bdf/uio ]]; then
+            pci_dev_echo "$bdf" "uio_pci_generic potentially broken, moving to igb_uio"
+            drivers_d["$bdf"]="no driver"
+            # This call will override $driver_name for remaining devices as well
+            linux_bind_driver "$bdf" igb_uio
+        fi
+    fi
+
+    iommu_group=$(basename $(readlink -f /sys/bus/pci/devices/$bdf/iommu_group))
+    if [ -e "/dev/vfio/$iommu_group" ]; then
+        if [ -n "$TARGET_USER" ]; then
+            chown "$TARGET_USER" "/dev/vfio/$iommu_group"
+        fi
+    fi
 }
 
 function linux_unbind_driver() {

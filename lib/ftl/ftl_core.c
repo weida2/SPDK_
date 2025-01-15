@@ -729,7 +729,7 @@ ftl_core_poller(void *ctx)
 	// 在base-ssd中进行gc
 	ftl_writer_run(&dev->writer_gc);
 	ftl_reloc(dev->reloc);
-	// 3.处理nv_cache的compaction
+	// 3.处理nv_cache的compaction, 判断是否打开新chunk, 更新节流统计
 	ftl_nv_cache_process(dev);
 	ftl_l2p_process(dev);
 
