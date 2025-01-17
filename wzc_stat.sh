@@ -1,1 +1,1 @@
-sudo timeout 3610 ./scripts/iostat.py -d -m -t 3610 -i 1 > iostat.log
+sudo timeout 610 ./scripts/iostat.py -d -m -t 610 -i 1 > iostat.log

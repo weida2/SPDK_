@@ -24,6 +24,7 @@ write_rq_end(struct spdk_bdev_io *bdev_io, bool success, void *arg)
 	rq->success = success;
 
 	// 2.更新 p2l_map
+	// 同时在 ftl_p2l_ckpt_issue_end 函数里调用 rq->owner.cb 回调函数 compaction_process_ftl_done 
 	ftl_p2l_ckpt_issue(rq);
 
 	spdk_bdev_free_io(bdev_io);

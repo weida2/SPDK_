@@ -151,6 +151,8 @@ ftl_p2l_ckpt_issue_end(int status, void *arg)
 	assert(rq->io.band->queue_depth > 0);
 	rq->io.band->queue_depth--;
 
+	// 在这里调用ftl_rq 的owner.cb 回调函数, 即compacotr->wr->owner.cb = compaction_frocess_ftl_done 
+	// compaction_frocess_ftl_done 函数将 chunk 统计时延往前推进
 	rq->owner.cb(rq);
 }
 

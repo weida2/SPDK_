@@ -153,8 +153,9 @@ ftl_nv_cache_init(struct spdk_ftl_dev *dev)
 		// 初始化时所有的chunk都是free状态，都插入到chunk_free_list中
 		TAILQ_INSERT_TAIL(&nv_cache->chunk_free_list, chunk, entry);
 
-		// static
+		// [wzc]static
 		chunk->compact_valid_blocks = 0;
+		chunk->io_cnt = 0;
 	}
 	assert(offset <= nvc_data_offset(nv_cache) + nvc_data_blocks(nv_cache));
 
@@ -555,12 +556,17 @@ compaction_stats_update(struct ftl_nv_cache_chunk *chunk)
 
 	compaction_bw->sum += *ptr;
 	nv_cache->compaction_sma = compaction_bw->sum / compaction_bw->count;
-	SPDK_NOTICELOG("[WZC_CMP]tt_comp_blks: %lu, chunk->seq_id: %lu, comp_blks: %u, valid_blks: %lu, comp_long: %lu s, comp_bw:%.2f\n",
+
+	SPDK_NOTICELOG("[WZC_CMP_ED]tt_cmp_blks: %lu, chk->seq_id: %lu, cmp_blks: %u, valid_blks: %lu, cmp_long: %lu, cmp_bw:%.2f\n",
 			  nv_cache->compaction_read_blocks, chunk->md->seq_id, chunk->md->blocks_compacted, 
-			  chunk->compact_valid_blocks, chunk->compaction_length_tsc / nv_cache->CPU_HZ, nv_cache->compaction_sma);
+			  chunk->compact_valid_blocks, chunk->compaction_length_tsc, nv_cache->compaction_sma);
+	SPDK_NOTICELOG("[WZC_CMP_ED]chk_seq_id: %lu, chk_io_cnt: %lu, cmp_long: %lu, st_time: %lu, invalid_time: %lu, read_valid_time: %lu, incosis_time: %lu, write_valid_time: %lu\n",
+			  chunk->md->seq_id, chunk->io_cnt, chunk->compaction_length_tsc, chunk->cmp_st_time, chunk->cmp_invalid_time,
+			  chunk->cmp_read_valid_time, chunk->cmp_inconsistent_time, chunk->cmp_write_valid_time);
+
 	chunk->compaction_length_tsc = 0;
 	chunk->compact_valid_blocks = 0;
-
+	chunk->io_cnt = 0;
 }
 
 static void
@@ -572,10 +578,8 @@ chunk_compaction_advance(struct ftl_nv_cache_chunk *chunk, uint64_t num_blocks)
 	// 1.增加compaction的持续时间
 	//   最后算得compaction的时间包括各种函数调用，回调，数据读取的时间
 	chunk->compaction_length_tsc += tsc - chunk->compaction_start_tsc;
+	chunk->cmp_tmp_time = tsc - chunk->compaction_start_tsc;
 	chunk->compaction_start_tsc = tsc;
-	chunk->comp_finish_comp_time = chunk->compaction_start_tsc / nv_cache->CPU_HZ;
-	SPDK_NOTICELOG("[WZC_CMP]chunk->seq_id: %lu, comp_blks: %u, cmp_st: %lu, cmp_advance_st: %lu \n",
-			  chunk->md->seq_id, chunk->md->blocks_compacted, chunk->comp_st_time, chunk->comp_finish_comp_time);
 
 	// 1.1 这里的blocks_compacted并不是真正需要读取的block数，而是compact过程中已经处理的block数
 	//     blocks_compacted = (valid + invalid) != valid
@@ -864,10 +868,10 @@ compaction_process(struct ftl_nv_cache_compactor *compactor)
 		return;
 	}
 
-	// 统计compaction的开始时间
+	// 统计chunk这次compaction的开始时间 (最多256 blks)
 	// 一开始相当于等于 0
 	chunk->compaction_start_tsc = spdk_thread_get_last_tsc(spdk_get_thread());
-	chunk->comp_st_time = chunk->compaction_start_tsc / nv_cache->CPU_HZ;
+	chunk->cmp_st_time = chunk->compaction_start_tsc;
 
 	/*
 	 * Get range of blocks to read
@@ -893,11 +897,11 @@ compaction_process(struct ftl_nv_cache_compactor *compactor)
 	if (offset) {
 		chunk->md->read_pointer += offset;
 		// 3.1 num_compact = offset
-		// 处理compacted' chunk,同时统计compact的带宽信息
-		// 将chunk的元数据清空,将chunk从chunk_comp_list移出然后放到needs_free_persist_list
+		// 如果cmp_blks到末尾，则将chunk的元数据清空,将chunk从chunk_comp_list移出然后放到needs_free_persist_list, 同时统计compact的带宽信息
+		// [trace chk_cmp_advance 1]: advance invalid_data 
 		chunk_compaction_advance(chunk, offset);
-		
-		
+		chunk->cmp_invalid_time += chunk->cmp_tmp_time;
+		chunk->cmp_tmp_time = 0;
 
 		to_read -= offset;
 		if (!to_read) {
@@ -923,10 +927,10 @@ compaction_process(struct ftl_nv_cache_compactor *compactor)
 	// 	   在compaction_process_finish_read函数中将 compactor->rd中的数据拷贝到compactor->wr中,
 	//     然后将compactor->wr请求插入到base-ssd writer_user的ftl_rq队列中
 
-	SPDK_NOTICELOG("[WZC_CMP]cmp_chk_seq_id: %lu, chk_oft: %lu, chk_rd_pointer: %lu, cmp_st: %lu\n",
-		chunk->md->seq_id, chunk->offset,  chunk->md->read_pointer, chunk->comp_st_time);
+	SPDK_NOTICELOG("[WZC_CMP]cmp_chk_seq_id: %lu, chk_oft: %lu, chk_rd_pointer: %u\n",
+		chunk->md->seq_id, chunk->offset,  chunk->md->read_pointer);
 	SPDK_NOTICELOG("[WZC_CMP]cmp_chk_read_blks: %lu, chk_begin_lba: %lu, chk_end_lba: %lu\n",
-		to_read, begin - dev->layout.base.total_blocks, end - dev->layout.base.total_blocks);
+		to_read, begin - dev->layout.base.total_blocks - chunk->offset, end - dev->layout.base.total_blocks - chunk->offset);
 	rc = compaction_submit_read(compactor, addr, to_read);
 	if (spdk_unlikely(rc)) {
 		/* An error occurred, inactivate this compactor, it will retry
@@ -936,8 +940,9 @@ compaction_process(struct ftl_nv_cache_compactor *compactor)
 		compactor_deactivate(compactor);
 		return;
 	}
-	SPDK_NOTICELOG("[WZC_CMP]cmp_chk_seq_id: %lu, cmp_st: %lu, cmp_finish_read: %lu\n",
-		chunk->md->seq_id, chunk->comp_st_time, chunk->comp_finish_read_time);
+	chunk->io_cnt += 1;
+	SPDK_NOTICELOG("[WZC_CMP]cmp_chk_seq_id: %lu, cmp_st: %lu, cmp_tmp_read: %lu\n",
+		chunk->md->seq_id, chunk->cmp_st_time, chunk->cmp_tmp_read_time);
 
 	/* IO has started, initialize compaction */
 	// 5.设置compactor->rd用于回调处理
@@ -995,8 +1000,12 @@ compaction_process_ftl_done(struct ftl_rq *rq)
 
 		ftl_l2p_update_base(dev, entry->lba, addr, entry->addr);
 		ftl_l2p_unpin(dev, entry->lba, 1);
-
+		// 在 compactor->wr 的回调用中更新了 chunk->compact_blks 数
+		// 那这里是相当于与数据写入了base-ssd 也算在 chunk->cmp_long 的时间里
+		// [thrace_chk_advance 3]: advance valid_data
 		chunk_compaction_advance(chunk, 1);
+		chunk->cmp_write_valid_time += chunk->cmp_tmp_time;
+		chunk->cmp_tmp_time = 0;
 		addr = ftl_band_next_addr(band, addr, 1);
 	}
 
@@ -1024,10 +1033,13 @@ compaction_process_finish_read(struct ftl_nv_cache_compactor *compactor)
 	uint64_t tsc = spdk_thread_get_last_tsc(spdk_get_thread());
 
 	// 1.再次更新compaction的持续时间
-	//   到这里增加的时间是数据读取的时间，各种函数回调、调用的时间
+	//   到这里增加的时间是数据读取的时间(主要)，各种函数回调、调用的时间
 	chunk->compaction_length_tsc += tsc - chunk->compaction_start_tsc;
+	chunk->cmp_tmp_time = tsc - chunk->compaction_start_tsc;
 	chunk->compaction_start_tsc = tsc;
-	chunk->comp_finish_read_time = chunk->compaction_start_tsc / compactor->nv_cache->CPU_HZ;
+	chunk->cmp_tmp_read_time = chunk->cmp_tmp_time;
+	chunk->cmp_read_valid_time += chunk->cmp_tmp_time;
+	chunk->cmp_tmp_time = 0;
 
 	dev = SPDK_CONTAINEROF(compactor->nv_cache,
 			       struct spdk_ftl_dev, nv_cache);
@@ -1039,6 +1051,8 @@ compaction_process_finish_read(struct ftl_nv_cache_compactor *compactor)
 	iter = &wr->entries[wr->iter.idx];
 
 	// 2.循环处理，将compactor->rd中的数据拷贝到compactor->wr中
+	// [trace_chk_advance 2]: advance invalid_data | inconsistent_data
+	uint64_t st = spdk_thread_get_last_tsc(spdk_get_thread());	
 	while (wr->iter.idx < num_entries && rd->iter.idx < rd->iter.count) {
 		/* Get metadata */
 		md = rd->entries[rd->iter.idx].io_md;
@@ -1079,6 +1093,8 @@ compaction_process_finish_read(struct ftl_nv_cache_compactor *compactor)
 		rd->iter.idx++;
 		cache_addr++;
 	}
+	uint64_t ed = spdk_thread_get_last_tsc(spdk_get_thread());	
+	chunk->cmp_inconsistent_time += ed - st;
 
 	if (num_entries == wr->iter.idx) {
 		/*
